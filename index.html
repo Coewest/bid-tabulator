@@ -1,0 +1,506 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bid Tabulator — Level Sub Bids in Minutes</title>
+<meta name="description" content="Upload subcontractor bids. Get a side-by-side leveled comparison in minutes." />
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root { --navy:#102a43; --navy-deep:#071b2e; --orange:#e56a2b; --orange-dark:#bd4c14; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .btn-primary { background:var(--orange); color:#fff; font-weight:700; border-radius:6px;
+    box-shadow:0 4px 0 #933809; transition:all .15s; }
+  .btn-primary:hover { transform:translateY(-1px); background:#ef7738; }
+  .btn-primary:active { transform:translateY(3px); box-shadow:0 1px 0 #933809; }
+  .btn-primary:disabled { opacity:.5; cursor:not-allowed; transform:none; }
+  .drop-active { border-color:var(--orange) !important; background:#fff7f0 !important; }
+  .cell-btn { width:100%; text-align:right; padding:8px 10px; border-radius:5px;
+    border:1px solid transparent; cursor:pointer; font-variant-numeric:tabular-nums; }
+  .cell-btn:hover { border-color:var(--orange); background:#fff7f0; }
+  .cell-outlier { background:#fef3e2 !important; }
+  .cell-outlier:hover { background:#fde8c8 !important; }
+  .cell-missing { color:#9aa5b1; }
+  .cell-included { color:#26734d; font-style:italic; }
+  .cell-adjusted { box-shadow:inset 0 0 0 2px var(--orange); }
+  .totals-low { background:#e5f4eb !important; }
+  th.sticky-col, td.sticky-col { position:sticky; left:0; background:#fff; z-index:1;
+    box-shadow:1px 0 0 #e5e7eb; }
+  thead th.sticky-col { background:#f8fafc; }
+  tr.totals-row td.sticky-col { background:#f1f5f9; }
+  .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace, monospace; }
+  .modal-backdrop { background:rgba(7,27,46,.55); }
+  input[type=text], input[type=number] { outline:none; }
+  input[type=text]:focus, input[type=number]:focus { border-color:var(--orange);
+    box-shadow:0 0 0 3px rgba(229,106,43,.2); }
+  .spinner { border:3px solid #e5e7eb; border-top-color:var(--orange);
+    border-radius:50%; width:40px; height:40px; animation:spin 0.8s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+
+<!-- ============ HERO ============ -->
+<header class="text-white" style="background:var(--navy-deep)">
+  <div class="max-w-6xl mx-auto px-5 py-12 md:py-16">
+    <div class="text-sm font-semibold tracking-wide mb-4" style="color:#f58b53">
+      <span class="inline-block w-7 h-[3px] align-middle mr-2" style="background:var(--orange)"></span>
+      FOR GC ESTIMATING TEAMS &nbsp;·&nbsp; A CLEARSCOPE PRODUCT
+    </div>
+    <h1 class="text-4xl md:text-6xl font-bold tracking-tight leading-none max-w-3xl">
+      Stop spending 2 hours leveling every trade.
+    </h1>
+    <p class="mt-5 text-lg md:text-xl max-w-2xl" style="color:#c9d8e2">
+      Upload your sub bids. Get a clean side-by-side comparison in 5 minutes —
+      exclusions flagged, scope gaps highlighted, real low bidder identified.
+    </p>
+    <div class="mt-8 flex flex-wrap items-center gap-4">
+      <a href="#app" class="btn-primary px-7 py-3.5 text-lg inline-block">Upload bids — try it free</a>
+      <span class="text-sm" style="color:#9fb3c1">First bid package free. $49/mo after that. No credit card.</span>
+    </div>
+  </div>
+</header>
+
+<main id="app" class="max-w-6xl mx-auto px-5 py-10">
+
+  <!-- ============ UPLOAD ============ -->
+  <section id="upload-section" class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
+    <h2 class="text-2xl font-bold" style="color:var(--navy)">Level your bid package</h2>
+    <p class="text-slate-500 mt-1">Drop up to 10 PDF or Excel sub bids — or one bid tabulation with all bidders.</p>
+
+    <div id="dropzone"
+         class="mt-5 border-2 border-dashed border-slate-300 rounded-xl p-10 text-center cursor-pointer transition-colors">
+      <div class="text-4xl mb-3">📄</div>
+      <p class="font-semibold text-lg">Drag &amp; drop bid files here</p>
+      <p class="text-slate-500 text-sm mt-1">or <span class="underline font-semibold" style="color:var(--orange-dark)">browse files</span>
+        &nbsp;·&nbsp; PDF, XLSX, XLS, CSV &nbsp;·&nbsp; max 10 files</p>
+      <input id="file-input" type="file" multiple accept=".pdf,.xlsx,.xls,.csv" class="hidden" />
+    </div>
+
+    <div id="file-list" class="mt-4 space-y-2"></div>
+
+    <div class="mt-6 flex items-center gap-4">
+      <button id="level-btn" class="btn-primary px-8 py-3 text-lg" disabled>Level my bids</button>
+      <span id="upload-hint" class="text-sm text-slate-400">Add at least one file to continue</span>
+    </div>
+
+    <div id="upload-error" class="hidden mt-4 p-4 rounded-lg bg-red-50 text-red-800 text-sm"></div>
+  </section>
+
+  <!-- ============ PROCESSING ============ -->
+  <section id="processing-section" class="hidden bg-white rounded-xl shadow-sm border border-slate-200 p-10 text-center">
+    <div class="spinner mx-auto"></div>
+    <p class="mt-4 font-semibold text-lg">Extracting line items…</p>
+    <p class="text-slate-500 text-sm">Reading tables, mapping bidders, verifying math.</p>
+  </section>
+
+  <!-- ============ BIDDER CONFIRM ============ -->
+  <section id="confirm-section" class="hidden bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
+    <h2 class="text-2xl font-bold" style="color:var(--navy)">Confirm bidders</h2>
+    <p class="text-slate-500 mt-1">We extracted these bidders. Correct any names before leveling —
+      <strong>wrong bidder mapping corrupts the whole table.</strong></p>
+    <div id="bidder-cards" class="mt-5 grid gap-3 md:grid-cols-2"></div>
+    <div id="confirm-warnings" class="mt-4"></div>
+    <div class="mt-6 flex items-center gap-4">
+      <button id="confirm-btn" class="btn-primary px-8 py-3 text-lg">Build comparison table</button>
+      <button id="back-to-upload" class="text-slate-500 underline text-sm">← back to files</button>
+    </div>
+  </section>
+
+  <!-- ============ RESULTS ============ -->
+  <section id="results-section" class="hidden">
+    <div class="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-lg mb-5">
+      <p class="text-sm text-amber-900">
+        <strong>⚠ Estimator judgment required.</strong>
+        Line items that look identical across bidders can hide different scopes, sizes, or inclusions.
+        This table organizes the numbers — <strong>you</strong> decide what's truly comparable.
+        <button id="dismiss-caution" class="underline ml-1">dismiss</button>
+      </p>
+    </div>
+
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-4">
+      <div>
+        <h2 id="project-title" class="text-2xl font-bold" style="color:var(--navy)">Leveled comparison</h2>
+        <p id="results-meta" class="text-slate-500 text-sm"></p>
+      </div>
+      <div class="flex gap-2">
+        <button id="export-btn" class="px-5 py-2.5 rounded-lg font-semibold text-white"
+                style="background:var(--navy)">⬇ Export CSV</button>
+        <button id="start-over" class="px-5 py-2.5 rounded-lg font-semibold border border-slate-300 text-slate-600">Start over</button>
+      </div>
+    </div>
+
+    <div id="math-alerts" class="mb-4 space-y-2"></div>
+
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 overflow-x-auto">
+      <table class="w-full text-sm" style="min-width:640px">
+        <thead id="results-head" class="bg-slate-50"></thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
+
+    <div class="mt-4 flex flex-wrap gap-4 text-xs text-slate-500">
+      <span><span class="inline-block w-3 h-3 rounded-sm align-middle mr-1" style="background:#fef3e2;border:1px solid #e8a13c"></span> Price outlier (&gt;2× or &lt;½× median)</span>
+      <span><span class="inline-block w-3 h-3 rounded-sm align-middle mr-1" style="background:#e5f4eb"></span> Leveled low bidder</span>
+      <span>— = not priced &nbsp;·&nbsp; <em>Incl.</em> = included at no charge</span>
+      <span>Click any cell to add a leveling adjustment.</span>
+    </div>
+  </section>
+
+  <!-- ============ HOW IT WORKS ============ -->
+  <section class="mt-14 text-white rounded-xl p-8 md:p-10" style="background:var(--navy-deep)">
+    <h2 class="text-3xl font-bold">How it works</h2>
+    <div class="grid md:grid-cols-3 gap-8 mt-6">
+      <div><div class="font-mono text-sm mb-2" style="color:#f58b53">01</div>
+        <h3 class="font-bold text-lg">Drop in the bids</h3>
+        <p class="text-sm mt-1" style="color:#b9cbd6">Upload up to 10 PDF or Excel sub bids for one trade package.</p></div>
+      <div><div class="font-mono text-sm mb-2" style="color:#f58b53">02</div>
+        <h3 class="font-bold text-lg">Get the comparison</h3>
+        <p class="text-sm mt-1" style="color:#b9cbd6">A normalized side-by-side with math verified, exclusions and gaps flagged.</p></div>
+      <div><div class="font-mono text-sm mb-2" style="color:#f58b53">03</div>
+        <h3 class="font-bold text-lg">Award with confidence</h3>
+        <p class="text-sm mt-1" style="color:#b9cbd6">Adjust the leveling, export to CSV, and carry the right number.</p></div>
+    </div>
+  </section>
+
+  <section class="mt-8 grid md:grid-cols-3 gap-6">
+    <div class="md:col-span-2 bg-white rounded-xl border border-slate-200 p-8">
+      <h2 class="text-2xl font-bold" style="color:var(--navy)">Rather have us do the first one?</h2>
+      <p class="text-slate-500 mt-2">Send us your last bid package — we'll return the leveled comparison free. No signup, no demo call.</p>
+      <a class="btn-primary px-6 py-3 inline-block mt-4"
+         href="mailto:hello@tabulator.clearscopebid.com?subject=Free%20bid%20package%20leveling">Email your bid package</a>
+    </div>
+    <div class="rounded-xl p-8" style="background:#fff1e8;border-top:6px solid var(--orange)">
+      <h2 class="font-bold" style="color:var(--navy)">Simple pricing</h2>
+      <div class="font-mono font-semibold mt-3" style="color:var(--navy);font-size:2.6rem;line-height:1">$49<span class="text-base font-sans font-semibold text-slate-500">/month</span></div>
+      <p class="text-slate-500 text-sm mt-1">No credit card required to try.</p>
+      <p class="font-bold mt-4 pt-4 border-t border-orange-200" style="color:var(--navy)">Your first bid package is free.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="max-w-6xl mx-auto px-5 py-8 text-sm text-slate-500 flex justify-between items-center">
+  <div>A <a href="https://clearscopebid.com" class="font-bold underline" style="color:var(--navy)">ClearScope</a> product</div>
+  <div class="w-10 h-1" style="background:var(--orange)"></div>
+</footer>
+
+<!-- ============ ADJUST MODAL ============ -->
+<div id="adjust-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="modal-backdrop absolute inset-0" data-close></div>
+  <div class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-sm">
+    <h3 id="adjust-title" class="font-bold text-lg" style="color:var(--navy)">Adjust</h3>
+    <p id="adjust-context" class="text-sm text-slate-500 mt-1"></p>
+    <label class="block text-xs font-semibold text-slate-500 mt-4 mb-1">LEVELING ADJUSTMENT (added to this bidder's total)</label>
+    <div class="flex items-center border border-slate-300 rounded-lg px-3">
+      <span class="text-slate-400">$</span>
+      <input id="adjust-input" type="number" step="100" class="w-full px-2 py-2.5 border-0" placeholder="0" />
+    </div>
+    <div class="flex justify-end gap-2 mt-5">
+      <button data-close class="px-4 py-2 text-sm font-semibold text-slate-500">Cancel</button>
+      <button id="adjust-apply" class="btn-primary px-5 py-2 text-sm">Apply</button>
+      <button id="adjust-clear" class="px-4 py-2 text-sm font-semibold text-red-600">Clear</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var state = { data:null, names:[], adjustments:{} };  // adjustments: {"bi:ii": amount}
+  var editCell = null;
+
+  var $ = function(id){ return document.getElementById(id); };
+  var dropzone=$("dropzone"), fileInput=$("file-input"), fileList=$("file-list"),
+      levelBtn=$("level-btn"), uploadHint=$("upload-hint"), uploadError=$("upload-error");
+  var files = [];
+
+  function fmt(n){
+    if (n==null || !isFinite(n)) return "—";
+    var neg = n<0;
+    return (neg?"−":"")+"$"+Math.abs(Math.round(n)).toLocaleString("en-US");
+  }
+  function fmtSigned(n){
+    if (!n) return "";
+    return (n>0?"+":"−")+"$"+Math.abs(Math.round(n)).toLocaleString("en-US");
+  }
+
+  /* ---------- upload ---------- */
+  dropzone.addEventListener("click", function(){ fileInput.click(); });
+  ["dragover","dragenter"].forEach(function(e){ dropzone.addEventListener(e, function(ev){ ev.preventDefault(); dropzone.classList.add("drop-active"); }); });
+  ["dragleave","drop"].forEach(function(e){ dropzone.addEventListener(e, function(ev){ ev.preventDefault(); dropzone.classList.remove("drop-active"); }); });
+  dropzone.addEventListener("drop", function(ev){ addFiles(ev.dataTransfer.files); });
+  fileInput.addEventListener("change", function(){ addFiles(fileInput.files); fileInput.value=""; });
+
+  var OK_EXT = [".pdf",".xlsx",".xls",".csv"];
+  function addFiles(list){
+    for (var i=0;i<list.length;i++){
+      if (files.length>=10) break;
+      var f=list[i];
+      var ext="."+f.name.split(".").pop().toLowerCase();
+      if (OK_EXT.indexOf(ext)<0) continue;
+      if (files.some(function(x){return x.name===f.name && x.size===f.size;})) continue;
+      files.push(f);
+    }
+    renderFiles();
+  }
+  function renderFiles(){
+    fileList.innerHTML = files.map(function(f,i){
+      return '<div class="flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-2.5 text-sm">'+
+        '<span class="font-medium truncate">'+escapeHtml(f.name)+
+        ' <span class="text-slate-400 font-normal">('+(f.size/1024).toFixed(0)+' KB)</span></span>'+
+        '<button data-rm="'+i+'" class="text-red-500 font-bold px-2">✕</button></div>';
+    }).join("");
+    levelBtn.disabled = files.length===0;
+    uploadHint.textContent = files.length===0 ? "Add at least one file to continue"
+      : files.length+" file"+(files.length>1?"s":"")+" ready";
+  }
+  fileList.addEventListener("click", function(e){
+    var b=e.target.closest("[data-rm]"); if(!b) return;
+    files.splice(Number(b.dataset.rm),1); renderFiles();
+  });
+  function escapeHtml(s){ return String(s).replace(/[&<>"']/g, function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];}); }
+
+  levelBtn.addEventListener("click", function(){
+    if (!files.length) return;
+    show("processing-section"); hide("upload-section");
+    uploadError.classList.add("hidden");
+    var fd=new FormData();
+    files.forEach(function(f){ fd.append("files", f); });
+    fetch("/api/upload",{method:"POST",body:fd})
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+      .then(function(res){
+        if (!res.ok) throw new Error(res.body.error || "Extraction failed");
+        state.data=res.body;
+        state.names=res.body.bidders.map(function(b){return b.name;});
+        state.adjustments={};
+        renderConfirm();
+        show("confirm-section"); hide("processing-section");
+      })
+      .catch(function(err){
+        hide("processing-section"); show("upload-section");
+        uploadError.textContent="Couldn't read those files: "+err.message+". Try a different export (PDF or Excel) of the bid tab.";
+        uploadError.classList.remove("hidden");
+      });
+  });
+
+  function show(id){ $(id).classList.remove("hidden"); }
+  function hide(id){ $(id).classList.add("hidden"); }
+
+  /* ---------- bidder confirmation ---------- */
+  function renderConfirm(){
+    var d=state.data;
+    var cards=d.bidders.map(function(b,i){
+      var calc=d.items.reduce(function(s,it){
+        var v=it.values[i];
+        return s+((v.status==="priced"||v.status==="included")&&v.amount!=null?v.amount:0);
+      },0);
+      var conf=d.bidder_confidence==="high"
+        ? '<span class="text-xs font-semibold text-green-700 bg-green-50 px-2 py-0.5 rounded">high confidence</span>'
+        : '<span class="text-xs font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded">please verify</span>';
+      return '<div class="border border-slate-200 rounded-lg p-4">'+
+        '<div class="flex items-center justify-between mb-2"><span class="text-xs font-bold text-slate-400">BIDDER '+(i+1)+'</span>'+conf+'</div>'+
+        '<input type="text" data-bidder="'+i+'" value="'+escapeHtml(state.names[i])+'" '+
+        ' class="w-full border border-slate-300 rounded-lg px-3 py-2 font-semibold" />'+
+        (b.location?'<div class="text-xs text-slate-400 mt-1">'+escapeHtml(b.location)+'</div>':"")+
+        '<div class="text-xs text-slate-500 mt-2">File: '+escapeHtml(b.file||"")+
+        ' · <span class="mono">'+fmt(calc)+'</span> in line items</div></div>';
+    }).join("");
+    $("bidder-cards").innerHTML=cards;
+    var w=$("confirm-warnings");
+    w.innerHTML=(d.warnings||[]).map(function(x){
+      return '<div class="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm mb-2">⚠ '+escapeHtml(x)+'</div>';
+    }).join("");
+  }
+  $("bidder-cards").addEventListener("input", function(e){
+    var inp=e.target.closest("[data-bidder]"); if(!inp) return;
+    state.names[Number(inp.dataset.bidder)]=inp.value;
+  });
+  $("confirm-btn").addEventListener("click", function(){
+    renderTable(); show("results-section"); hide("confirm-section");
+    document.getElementById("results-section").scrollIntoView({behavior:"smooth"});
+  });
+  $("back-to-upload").addEventListener("click", function(){ show("upload-section"); hide("confirm-section"); });
+  $("dismiss-caution").addEventListener("click", function(e){
+    e.target.closest("div").style.display="none";
+  });
+
+  /* ---------- comparison table ---------- */
+  function median(a){ var s=a.slice().sort(function(x,y){return x-y;}); var m=s.length>>1;
+    return s.length%2? s[m] : (s[m-1]+s[m])/2; }
+
+  function isOutlier(ii, bi){
+    var vals=state.data.items[ii].values
+      .map(function(v){return v.amount;})
+      .filter(function(a){return a!=null && a>0;});
+    if (vals.length<3) return false;
+    var med=median(vals), amt=state.data.items[ii].values[bi].amount;
+    if (amt==null||amt<=0) return false;
+    return amt>med*2 || amt<med*0.5;
+  }
+  function calcTotal(bi){
+    var t=state.data.items.reduce(function(s,it){
+      var v=it.values[bi];
+      return s+((v.status==="priced"||v.status==="included")&&v.amount!=null?v.amount:0);
+    },0);
+    Object.keys(state.adjustments).forEach(function(k){
+      var parts=k.split(":"); if(Number(parts[0])===bi) t+=state.adjustments[k];
+    });
+    return t;
+  }
+  function adjFor(bi,ii){ return state.adjustments[bi+":"+ii]||0; }
+
+  function cellHtml(ii, bi){
+    var v=state.data.items[ii].values[bi];
+    var adj=adjFor(bi,ii);
+    var cls="cell-btn", inner="";
+    if (v.status==="not_priced"){ cls+=" cell-missing"; inner='<span class="mono">—</span><div class="text-[11px]">not priced</div>'; }
+    else if (v.status==="included"){ cls+=" cell-included"; inner='<span class="mono">Incl.</span>'; }
+    else if (v.amount!=null){
+      var disp=v.amount+adj;
+      inner='<span class="mono font-semibold">'+fmt(disp)+'</span>';
+      if (adj) inner+='<div class="text-[11px]" style="color:var(--orange-dark)">'+fmtSigned(adj)+' adj</div>';
+      else if (v.rate!=null) inner+='<div class="text-[11px] text-slate-400">'+fmt(v.rate)+' '+
+        escapeHtml(state.data.items[ii].unit||"")+'</div>';
+      if (isOutlier(ii,bi)) cls+=" cell-outlier";
+    } else { cls+=" cell-missing"; inner='<span class="mono">—</span>'; }
+    if (adj) cls+=" cell-adjusted";
+    var label=state.names[bi]+", "+state.data.items[ii].description;
+    return '<button class="'+cls+'" data-bi="'+bi+'" data-ii="'+ii+'" aria-label="'+escapeHtml(label)+'">'+inner+'</button>';
+  }
+
+  function renderTable(){
+    var d=state.data, n=d.bidders.length;
+    var totals=[], i, bi;
+    for (bi=0;bi<n;bi++) totals.push(calcTotal(bi));
+    var low=totals.indexOf(Math.min.apply(null,totals));
+
+    var head='<tr><th class="sticky-col text-left p-3 font-bold" style="color:var(--navy)">Scope item</th>'+
+      d.bidders.map(function(_,b2){return '<th class="p-3 text-right font-bold" style="color:var(--navy)">'+escapeHtml(state.names[b2])+'</th>';}).join("")+'</tr>';
+    $("results-head").innerHTML=head;
+
+    var body="";
+    d.items.forEach(function(it,ii){
+      var cells="";
+      for (bi=0;bi<n;bi++) cells+='<td class="p-1 border-t border-slate-100">'+cellHtml(ii,bi)+'</td>';
+      var qty=it.qty!=null? '<div class="text-[11px] text-slate-400 mono">'+it.qty+' '+escapeHtml(it.unit||"")+'</div>' : "";
+      body+='<tr><td class="sticky-col p-3 border-t border-slate-100"><div class="font-semibold text-[13px]">'+
+        escapeHtml(it.description)+'</div>'+qty+'</td>'+cells+'</tr>';
+    });
+    // totals rows
+    function totalRow(label, vals, cls){
+      var cells=vals.map(function(v,bi){
+        var inner= v==null? '<span class="mono text-slate-400">—</span>'
+          : '<span class="mono font-bold">'+fmt(v)+'</span>';
+        return '<td class="p-3 border-t-2 border-slate-200 text-right '+(cls||"")+(bi===low&&cls==="leveled"?" totals-low":"")+'">'+inner+'</td>';
+      }).join("");
+      return '<tr class="totals-row bg-slate-50"><td class="sticky-col p-3 border-t-2 border-slate-200 font-bold text-[13px]">'+label+'</td>'+cells+'</tr>';
+    }
+    body+=totalRow("Submitted total", d.submitted_totals);
+    body+=totalRow("Leveled total", totals, "leveled");
+    $("results-body").innerHTML=body;
+
+    $("project-title").textContent=d.project_name||"Leveled comparison";
+    $("results-meta").textContent=d.bidders.length+" bidders · "+d.items.length+" scope items · click any cell to adjust";
+
+    // math alerts
+    var alerts=[];
+    d.bidders.forEach(function(b,bi){
+      var sub=d.submitted_totals[bi], calc=totals[bi];
+      if (sub!=null){
+        var diff=Math.abs(calc-sub), tol=Math.max(1, Math.abs(sub)*0.002);
+        if (diff>tol){
+          alerts.push('<div class="p-3 rounded-lg bg-red-50 text-red-900 text-sm">⚠ <strong>'+
+            escapeHtml(state.names[bi])+'</strong>: line items sum to '+fmt(calc)+
+            ' but the source shows '+fmt(sub)+' — possible math error in the bid tab.</div>');
+        }
+      }
+    });
+    // all-zero / not-priced bidder check
+    d.bidders.forEach(function(b,bi){
+      var priced=d.items.filter(function(it){return it.values[bi].status==="priced";}).length;
+      if (priced===0){
+        alerts.push('<div class="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm">⚠ <strong>'+
+          escapeHtml(state.names[bi])+'</strong> has no priced line items — excluded from low-bidder calculation.</div>');
+      }
+    });
+    $("math-alerts").innerHTML=alerts.join("");
+  }
+
+  /* ---------- adjust modal ---------- */
+  var modal=$("adjust-modal");
+  document.addEventListener("click", function(e){
+    var cell=e.target.closest(".cell-btn[data-bi]");
+    if (cell && $("results-section").classList.contains("hidden")===false && cell.closest("#results-body")){
+      editCell={bi:Number(cell.dataset.bi), ii:Number(cell.dataset.ii)};
+      var it=state.data.items[editCell.ii];
+      $("adjust-title").textContent=state.names[editCell.bi]+" · "+it.description;
+      var v=it.values[editCell.bi];
+      $("adjust-context").textContent=(v.status==="priced"?fmt(v.amount):
+        v.status==="included"?"Included at no charge":"Not priced in this bid")+
+        ". Add the cost to make this bid apples-to-apples.";
+      $("adjust-input").value=adjFor(editCell.bi,editCell.ii)||"";
+      modal.classList.remove("hidden");
+      setTimeout(function(){$("adjust-input").focus();},50);
+      return;
+    }
+    if (e.target.closest("[data-close]")) modal.classList.add("hidden");
+  });
+  $("adjust-apply").addEventListener("click", function(){
+    if (!editCell) return;
+    var v=Number($("adjust-input").value);
+    var k=editCell.bi+":"+editCell.ii;
+    if (isFinite(v)&&v!==0) state.adjustments[k]=v; else delete state.adjustments[k];
+    modal.classList.add("hidden"); renderTable();
+  });
+  $("adjust-clear").addEventListener("click", function(){
+    if (!editCell) return;
+    delete state.adjustments[editCell.bi+":"+editCell.ii];
+    modal.classList.add("hidden"); renderTable();
+  });
+  $("adjust-input").addEventListener("keydown", function(e){
+    if (e.key==="Enter") $("adjust-apply").click();
+    if (e.key==="Escape") modal.classList.add("hidden");
+  });
+
+  /* ---------- export ---------- */
+  $("export-btn").addEventListener("click", function(){
+    var d=state.data, n=d.bidders.length;
+    function q(s){ s=String(s==null?"":s); return '"'+s.replace(/"/g,'""')+'"'; }
+    var lines=[];
+    lines.push(["Scope item","Qty","Unit"].concat(d.bidders.map(function(_,b){return state.names[b];})).map(q).join(","));
+    d.items.forEach(function(it){
+      var row=[it.description, it.qty==null?"":it.qty, it.unit||""];
+      it.values.forEach(function(v,bi){
+        var adj=adjFor(bi,d.items.indexOf(it));
+        if (v.status==="priced"&&v.amount!=null) row.push((v.amount+adj).toFixed(2));
+        else if (v.status==="included") row.push("Included");
+        else row.push("");
+      });
+      lines.push(row.map(q).join(","));
+    });
+    function totRow(label, arr){
+      var row=[label,"",""];
+      for (var bi=0;bi<n;bi++) row.push(arr[bi]==null?"":arr[bi].toFixed(2));
+      lines.push(row.map(q).join(","));
+    }
+    var calc=[]; for (var bi=0;bi<n;bi++) calc.push(calcTotal(bi));
+    totRow("Submitted total", d.submitted_totals);
+    totRow("Leveled total", calc);
+    var blob=new Blob([lines.join("\r\n")],{type:"text/csv"});
+    var a=document.createElement("a");
+    a.href=URL.createObjectURL(blob);
+    a.download="leveled-bids.csv"; a.click();
+    setTimeout(function(){URL.revokeObjectURL(a.href);},2000);
+  });
+
+  $("start-over").addEventListener("click", function(){
+    files=[]; renderFiles(); state={data:null,names:[],adjustments:{}};
+    hide("results-section"); hide("confirm-section"); show("upload-section");
+    window.scrollTo({top:0,behavior:"smooth"});
+  });
+
+  renderFiles();
+})();
+</script>
+</body>
+</html>
