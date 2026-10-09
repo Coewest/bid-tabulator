@@ -455,7 +455,7 @@ def extract_pdf_tab(path, filename):
         except ValueError:
             qty = None
         vals = []
-        row_type = detect_row_type(desc, " ".join(header))
+        row_type = detect_row_type(desc, " ".join(h for h in header if h))
         # substitution-alternate structure: deduct rows mirror base items, alternate
         # rows replace them. NEVER auto-combine: the gate lives in the frontend.
         dl = desc.lower()
