@@ -496,10 +496,13 @@
     return amt>med*2 || amt<med*0.5;
   }
   function effAmount(bi, ii){
-    // effective cell amount: user's ambiguous-cell pick wins, else extracted
+    // effective cell amount: user's ambiguous-cell pick wins, else extracted.
+    // Returns null for undecided ambiguous cells so they are EXCLUDED from
+    // totals (never silently counted as $0).
     var k=bi+":"+ii;
     if (state.choices[k]!=null) return state.choices[k];
     var v=state.data.items[ii].values[bi];
+    if (v.status==="ambiguous") return null;
     return (v.status==="priced"||v.status==="included")&&v.amount!=null ? v.amount : 0;
   }
   function calcTotal(bi){
@@ -508,7 +511,8 @@
     var t=state.data.items.reduce(function(s,it,ii){
       if ((it.row_type||"amount")!=="amount") return s;
       if (it.deduct || it.alternate) return s;
-      return s + effAmount(bi, ii);
+      var a=effAmount(bi, ii);
+      return s + (a==null?0:a);
     },0);
     Object.keys(state.adjustments).forEach(function(k){
       var parts=k.split(":"); if(Number(parts[0])===bi) t+=state.adjustments[k];
