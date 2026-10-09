@@ -415,6 +415,113 @@ def extract_verdantas_summary(path, filename):
     }, warnings
 
 
+def detect_mass_housing(pages):
+    """Detect MA Housing Authority bid tab: GENERAL BID TABULATION + HOUSING AUTHORITY."""
+    full = "\n".join(pages[:2]).upper()
+    return "GENERAL BID TABULATION" in full and "HOUSING AUTHORITY" in full
+
+
+def extract_mass_housing(path, filename):
+    """Parse MA Housing Authority bid tab: Contractor Name & Address | Bid Amount | ...
+
+    Standardized form used across MA housing authorities. Rows have contractor
+    names and bid amounts. Returns (data, warnings) or (None, [errs]).
+    """
+    import re
+    import pdfplumber
+    pages = _pdf_full_text(path)
+    if not detect_mass_housing(pages):
+        return None, ["not a MA housing authority tab"]
+
+    warnings = []
+    bidders = []
+
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            tables = page.find_tables()
+            for t in tables:
+                data = t.extract()
+                if not data or len(data) < 2:
+                    continue
+                # Find the header row with "Contractor" and "Bid Amount"
+                hdr_idx = None
+                for i, row in enumerate(data):
+                    row_text = " ".join([c or "" for c in row]).upper()
+                    # Handle doubled-text rendering artifact
+                    row_text = re.sub(r"(.)\1", r"\1", row_text)
+                    if "CONTRACTOR" in row_text and "BID" in row_text:
+                        hdr_idx = i
+                        break
+                if hdr_idx is None:
+                    continue
+                # Find bid amount column
+                header = data[hdr_idx]
+                amt_col = None
+                name_col = 0
+                for j, h in enumerate(header):
+                    if not h:
+                        continue
+                    hn = re.sub(r"(.)\1", r"\1", h.upper())
+                    if "BID" in hn and "AMOUNT" in hn:
+                        amt_col = j
+                    if "CONTRACTOR" in hn:
+                        name_col = j
+                if amt_col is None:
+                    continue
+                # Extract rows
+                for row in data[hdr_idx + 1:]:
+                    if len(row) <= max(name_col, amt_col):
+                        continue
+                    name = (row[name_col] or "").strip()
+                    amt_raw = (row[amt_col] or "").strip()
+                    # Clean doubled-text artifact
+                    name = re.sub(r"(.)\1", r"\1", name)
+                    if not name or len(name) < 3:
+                        continue
+                    val, status = parse_money(amt_raw)
+                    if val is not None and status == "priced":
+                        bidders.append((name, val))
+                    elif amt_raw:
+                        warnings.append(f"Could not parse amount for {name}: {amt_raw}")
+
+    if len(bidders) < 2:
+        return None, ["MA housing: fewer than 2 bidders with amounts"]
+
+    # Deduplicate by name, keep first
+    seen = set()
+    unique = []
+    for name, val in bidders:
+        if name.lower() not in seen:
+            seen.add(name.lower())
+            unique.append((name, val))
+    bidders = unique
+
+    if len(bidders) < 2:
+        return None, ["MA housing: fewer than 2 unique bidders"]
+
+    bidder_names = [n for n, _ in bidders]
+    items = [{
+        "description": "Total Bid",
+        "bids": {n: {"amount": v, "confidence": "medium"} for n, v in bidders},
+        "comparable": True,
+    }]
+
+    return {
+        "bidders": bidder_names,
+        "bidder_data": {
+            n: {
+                "name": n, "total": v, "total_state": "unverified",
+                "items": [{"description": "Total Bid", "amount": v, "confidence": "medium"}],
+                "confidence": "medium",
+            } for n, v in bidders
+        },
+        "items": items,
+        "extraction_quality": "fair",
+        "format": "mass_housing",
+        "warnings": warnings,
+    }, warnings
+
+
 def detect_board_packet(pages):
     """Detect school board / council packet: ACTION REPORT, Board of Education, etc."""
     full = "\n".join(pages[:3]).upper()  # check first 3 pages
@@ -1140,6 +1247,8 @@ def upload():
             data, errs = None, []
             if detect_verdantas_format(pages):
                 data, errs = extract_verdantas_summary(path, filename)
+            elif detect_mass_housing(pages):
+                data, errs = extract_mass_housing(path, filename)
             elif detect_board_packet(pages):
                 data, errs = extract_board_packet(path, filename)
             if data and len(data.get("bidders", [])) >= 2 and data.get("items"):
