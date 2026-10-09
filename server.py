@@ -17,11 +17,16 @@ import os
 import re
 import tempfile
 
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, session
+
+import auth_billing
 
 app = Flask(__name__)
 BASE = os.path.dirname(os.path.abspath(__file__))
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50MB
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-only-change-me")
+auth_billing.init_db()
+auth_billing.register_routes(app)
 
 # ---------------------------------------------------------------- parsing utils
 
@@ -1390,8 +1395,8 @@ def health():
     return jsonify(ok=True)
 
 
-@app.route("/api/upload", methods=["POST"])
-def upload():
+def _do_upload():
+    """Core parsing logic. Returns a Flask response. Wrapped by upload() for gating."""
     files = request.files.getlist("files")
     if not files:
         return jsonify(error="no files uploaded"), 400
@@ -1566,6 +1571,41 @@ def upload():
                 os.unlink(path)
             except OSError:
                 pass
+
+
+@app.route("/api/upload", methods=["POST"])
+def upload():
+    """Gated wrapper: enforces free-tier + subscription before parsing."""
+    user = auth_billing.current_user()
+    allowed, reason = auth_billing.can_upload(user)
+    if not allowed:
+        if reason == "needs_account":
+            return jsonify(error="free_limit",
+                           message="Your free tabulation is used. Create a free account to save it — "
+                                   "then subscribe for $49/mo for unlimited tabulations."), 402
+        return jsonify(error="subscription_required",
+                       message="You've used your free tabulation. Subscribe for $49/mo "
+                               "for unlimited bid tabulations."), 402
+    resp = _do_upload()
+    # On success, persist the tabulation and mark free use.
+    try:
+        status = resp.status_code if hasattr(resp, "status_code") else 200
+        if status == 200:
+            data = resp.get_json() if hasattr(resp, "get_json") else None
+            if data and not data.get("error"):
+                project = data.get("project_name") or "Bid package"
+                uid = user["id"] if user else None
+                tab_id = auth_billing.save_tabulation(uid, project, data)
+                # attach tabulation id to response
+                data["tabulation_id"] = tab_id
+                data["saved"] = bool(uid)
+                data["account_status"] = reason
+                resp = jsonify(data)
+                if not user:
+                    session["free_used"] = True
+    except Exception:
+        pass  # never break parsing because of persistence
+    return resp
 
 
 if __name__ == "__main__":
