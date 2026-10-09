@@ -176,10 +176,12 @@ def compute_basis_state(items):
 
 
 def compute_ranking(items, bidder_excluded, bidder_names, extraction_quality,
-                    low_conf_counts, blocked=False):
-    """Ranking with honesty states: ranked | too_close | blocked.
+                    low_conf_counts, blocked=False, total_states=None):
+    """Ranking with honesty states: ranked | too_close | blocked | needs_review.
     'blocked' = service bid with no quantity basis — refuse to rank.
-    'too_close' = top-two margin below extraction uncertainty."""
+    'too_close' = top-two margin below extraction uncertainty.
+    'needs_review' = totals not verified or single valid bidder — refuse to
+    crown a winner from garbage (Round 4 fix: Sim 22, 24, 25)."""
     totals = []
     for gi in range(len(bidder_names)):
         if bidder_excluded[gi]:
@@ -196,10 +198,24 @@ def compute_ranking(items, bidder_excluded, bidder_names, extraction_quality,
         return {"state": "blocked", "winner": None, "margin": None,
                 "margin_pct": None, "totals": totals,
                 "note": "No quantity/frequency basis — ranking withheld."}
-    if len(order) < 2:
-        return {"state": "ranked",
-                "winner": order[0][1] if order else None,
-                "margin": None, "margin_pct": None, "totals": totals, "note": ""}
+    # Round 4 fix: refuse to rank from unverified totals or a single bidder.
+    # A lone "bidder" is usually a phantom from a failed parse, not a real winner.
+    n_valid = len(order)
+    if total_states:
+        unverified = [bidder_names[gi] for gi, t in enumerate(totals)
+                      if t is not None and total_states[gi] != "verified"]
+    else:
+        unverified = []
+    if n_valid < 2:
+        return {"state": "needs_review", "winner": None,
+                "margin": None, "margin_pct": None, "totals": totals,
+                "note": ("Only one bidder with priced items — cannot rank. "
+                         "Verify the tab parsed correctly before awarding.")}
+    if unverified:
+        return {"state": "needs_review", "winner": None,
+                "margin": None, "margin_pct": None, "totals": totals,
+                "note": ("Bid totals not verified for: " + ", ".join(unverified) +
+                         " — ranking withheld until totals are confirmed.")}
     (t1, w1), (t2, w2) = order[0], order[1]
     margin = t2 - t1
     pct = (margin / t1) if t1 else 0
@@ -223,11 +239,19 @@ def norm_desc(s):
     return s
 
 
-def desc_match(a, b, thresh=0.55):
+def desc_match(a, b, thresh=0.75):
+    # Round 4 fix: raised from 0.55 to 0.75 — 0.55 collapsed 5 distinct
+    # alternates into one row and could merge deduct+additive rows (Sim 16, 18).
     ta, tb = set(norm_desc(a).split()), set(norm_desc(b).split())
     if not ta or not tb:
         return False
     return len(ta & tb) / max(len(ta), len(tb)) >= thresh
+
+
+def _has_deduct_lang(desc):
+    """True if description carries deduct/substitution language."""
+    dl = (desc or "").lower()
+    return "deduct" in dl or "delete" in dl or "credit" in dl
 
 
 HEADER_WORDS = ("item", "description", "scope", "work description", "bid item")
@@ -262,8 +286,14 @@ def is_tax_row(row):
     # scan the whole row: tax rows can carry the rate ("8.5") in the item-number
     # column with the description elsewhere (Sim 15). Avoid matching item
     # descriptions that merely mention tax as a word — require tax + money/%.
+    # Round 4 fix: use word boundaries (not substring) and explicitly exclude
+    # "non-taxable" / "tax-exempt" / "no tax" phrases (Sim 20).
     joined = " ".join(norm_desc(c) for c in row if c)
-    if not any(w in joined for w in TAX_WORDS):
+    # explicit exclusions first: these are NOT tax rows
+    if re.search(r"\bnon[\s-]?taxable\b|\btax[\s-]?exempt\b|\bno tax\b|\btax free\b", joined):
+        return False
+    # word-boundary match on "tax" or "sales tax" (not substring like "taxable")
+    if not re.search(r"\bsales tax\b|\btax\b", joined):
         return False
     raw = " ".join(str(c or "") for c in row)
     return bool(re.search(r"\d", raw))  # must carry a number (rate or amount)
@@ -607,13 +637,16 @@ def extract_pdf_tab(path, filename):
                        for gi in range(n_bidders)]
     ranking = compute_ranking(items, bidder_excluded, bidder_names,
                               extraction_quality, low_conf_counts,
-                              blocked=(basis_state == "unknown"))
+                              blocked=(basis_state == "unknown"),
+                              total_states=total_states)
     if ranking["state"] == "blocked":
         warnings.append(
             "⛔ Cannot rank these bids: " + " ".join(basis_notes) +
             " Enter a visits-per-period frequency to see a PROVISIONAL comparison.")
     elif ranking["state"] == "too_close":
         warnings.append("⚠ " + ranking["note"])
+    elif ranking["state"] == "needs_review":
+        warnings.append("⛔ " + ranking["note"])
 
     # value-weighted ranking: weight rows by dollar value, not count
     # score = sum over rows of (bidder_price / median_price * row_median_value)
@@ -753,12 +786,49 @@ def extract_pdf_single(path, filename):
     return _rows_to_bidder(rows, filename), []
 
 
+def _apply_scope_comparability(items, bidders):
+    """Round 4 fix (Sim 25): detect when bidders priced disjoint scopes.
+    If any pair of bidders shares < 50% of priced items, mark those items
+    comparable=False so the UI warns instead of ranking across scopes."""
+    n_b = len(bidders)
+    if n_b < 2 or not items:
+        return []
+    # per-bidder set of priced item indices
+    priced_sets = []
+    for bi in range(n_b):
+        s = set(i for i, it in enumerate(items)
+                if it["values"][bi]["status"] == "priced"
+                and it["values"][bi]["amount"] not in (None, 0))
+        priced_sets.append(s)
+    notes = []
+    for a in range(n_b):
+        for b in range(a + 1, n_b):
+            sa, sb = priced_sets[a], priced_sets[b]
+            union = sa | sb
+            if not union:
+                continue
+            overlap = len(sa & sb) / len(union)
+            if overlap < 0.5:
+                notes.append(
+                    f"{bidders[a]['name']} vs {bidders[b]['name']}: only "
+                    f"{overlap * 100:.0f}% scope overlap — likely different scopes")
+    if notes:
+        for it in items:
+            it["comparable"] = False
+    return notes
+
+
 def merge_single_bids(bidders):
     """Merge per-bidder item lists into shared normalized items (fuzzy desc match)."""
     items = []  # {description, values:[per bidder {amount,status}]}
     for bi, b in enumerate(bidders):
         for it in b["items"]:
-            hit = next((m for m in items if desc_match(m["description"], it["description"])), None)
+            # Round 4 fix: NEVER merge a deduct row with a non-deduct row —
+            # doing so strips the deduct flag and defeats the substitution gate.
+            it_deduct = _has_deduct_lang(it["description"])
+            hit = next((m for m in items
+                        if desc_match(m["description"], it["description"])
+                        and _has_deduct_lang(m["description"]) == it_deduct), None)
             if hit is None:
                 dl = (it["description"] or "").lower()
                 mn, mx = parse_minmax(it["description"])
@@ -847,6 +917,8 @@ def upload():
                                warnings=warnings), 422
 
         items = merge_single_bids(bidders)
+        # Round 4 fix (Sim 25): flag cross-scope comparisons
+        scope_notes = _apply_scope_comparability(items, bidders)
         # bids mode: no submitted totals to verify against
         n_b = len(bidders)
         bidder_excluded = []
@@ -858,16 +930,30 @@ def upload():
         basis_state, basis_notes = compute_basis_state(items)
         low_conf_counts = [sum(1 for it in items if it["values"][bi]["confidence"] == "low")
                            for bi in range(n_b)]
+        # Round 4 fix: extraction quality from actual data, not hardcoded "good".
+        # A single phantom bidder from a failed tab parse must never look confident.
+        total_vals = sum(1 for it in items for bi in range(n_b)
+                         if it["values"][bi]["status"] in ("priced", "included"))
+        low_vals = sum(1 for it in items for bi in range(n_b)
+                       if it["values"][bi]["confidence"] == "low")
+        bids_extraction_quality = (
+            "poor" if n_b < 2 or (total_vals and low_vals / total_vals > 0.4)
+            else "good")
         ranking = compute_ranking(items, bidder_excluded,
                                   [b["name"] for b in bidders],
-                                  "good", low_conf_counts,
-                                  blocked=(basis_state == "unknown"))
+                                  bids_extraction_quality, low_conf_counts,
+                                  blocked=(basis_state == "unknown"),
+                                  total_states=["unparseable"] * n_b)
         warnings_b = warnings + [
             "single-bid files: bidder names taken from filenames - please confirm"]
         if ranking["state"] == "blocked":
             warnings_b.append("⛔ Cannot rank these bids: " + " ".join(basis_notes))
         elif ranking["state"] == "too_close":
             warnings_b.append("⚠ " + ranking["note"])
+        elif ranking["state"] == "needs_review":
+            warnings_b.append("⛔ " + ranking["note"])
+        if scope_notes:
+            warnings_b.append("⛔ Cross-scope warning: " + "; ".join(scope_notes))
         return jsonify({
             "project_name": "Bid package",
             "mode": "bids",
@@ -887,7 +973,7 @@ def upload():
             "basis_state": basis_state,
             "basis_notes": basis_notes,
             "ranking": ranking,
-            "extraction_quality": "good",
+            "extraction_quality": bids_extraction_quality,
             "warnings": warnings_b,
             "bidder_confidence": "low",
             "value_scores": [None] * len(bidders),
