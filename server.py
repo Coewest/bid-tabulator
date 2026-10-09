@@ -144,7 +144,10 @@ def detect_tax_rate(row):
 
 SERVICE_WORDS = ("mow", "maintenance", "cleaning", "janitorial", "landscape",
                  "lawn", "fertiliz", "pruning", "cleanup", "snow removal",
-                 "per visit", "weekly", "monthly", "per season", "service")
+                 "per visit", "weekly", "monthly", "per season",
+                 "service contract", "service agreement")
+# NOTE: bare "service" intentionally excluded — it false-positives on
+# "service upgrade", "electrical service", "main service panel", etc.
 
 
 def compute_basis_state(items):
@@ -273,13 +276,24 @@ def row_label(row):
     return norm_desc(row[0]) if row and row[0] else ""
 
 
-def is_total_row(row):
-    lab = row_label(row)
-    return any(w == lab or lab.startswith(w + " ") for w in TOTAL_WORDS) or lab in TOTAL_WORDS
+def _row_labels(row, desc_idx=None):
+    """Candidate label cells: column 0 plus the detected description column
+    (total/subtotal labels sit in the description column when an item-number
+    column leads)."""
+    labs = [row_label(row)]
+    if desc_idx is not None and desc_idx < len(row) and desc_idx != 0:
+        labs.append(norm_desc(row[desc_idx]))
+    return labs
 
 
-def is_subtotal_row(row):
-    return row_label(row) in SUBTOTAL_WORDS
+def is_total_row(row, desc_idx=None):
+    labs = _row_labels(row, desc_idx)
+    return any(any(w == lab or lab.startswith(w + " ") for w in TOTAL_WORDS)
+               or lab in TOTAL_WORDS for lab in labs)
+
+
+def is_subtotal_row(row, desc_idx=None):
+    return any(lab in SUBTOTAL_WORDS for lab in _row_labels(row, desc_idx))
 
 
 def is_tax_row(row):
@@ -697,7 +711,15 @@ def extract_pdf_tab(path, filename):
         return None, ["no tables found in PDF"]
     # largest table by cells
     tab = max(tables, key=lambda t: len(t["data"]) * max((len(r) for r in t["data"]), default=0))
-    data, col_x = tab["data"], tab["col_x"]
+    return extract_tab_from_rows(tab["data"], tab["col_x"], filename)
+
+
+def extract_tab_from_rows(data, col_x, filename):
+    """Parse a multi-bidder bid tabulation from table rows.
+
+    data: list of row-lists. col_x: per-column x-centers (PDF) or None
+    (Excel/CSV — name mapping then uses column-index proximity).
+    Returns (result_dict, warnings) or (None, [errors])."""
     warnings = []
 
     # find header row
@@ -753,37 +775,70 @@ def extract_pdf_tab(path, filename):
     bidder_names = [""] * n_bidders
     bidder_locs = [""] * n_bidders
     name_conf = "low"
+
+    def _split_name(txt):
+        parts = [p.strip() for p in txt.split("\n") if p.strip()]
+        return (parts[0] if parts else txt,
+                parts[1] if len(parts) > 1 else "")
+
     if name_row_idx is not None and best_score > 0:
         name_row = data[name_row_idx]
-        # map each group's x-center to nearest name cell x-center
-        name_cells = []  # (text, x_center)
-        for ci in range(first_bid_col, len(name_row)):
-            cell = (name_row[ci] or "").strip()
-            if cell and any(h in cell.lower() for h in COMPANY_HINTS):
-                xc = col_x[ci] if ci < len(col_x) else None
-                if xc is not None:
-                    name_cells.append((cell, xc))
-        group_x = []
-        for (tc, rc) in groups:
-            xs = [col_x[c] for c in (tc, rc) if c is not None and c < len(col_x)]
-            group_x.append(sum(xs) / len(xs) if xs else None)
-        used = set()
-        for gi, gx in enumerate(group_x):
-            if gx is None:
-                continue
-            best, bestd = None, 1e18
-            for ni, (txt, nx) in enumerate(name_cells):
-                if ni in used:
+        if col_x:
+            # PDF: map each group's x-center to nearest name cell x-center
+            name_cells = []  # (text, x_center)
+            for ci in range(first_bid_col, len(name_row)):
+                cell = (name_row[ci] or "").strip()
+                if cell and any(h in cell.lower() for h in COMPANY_HINTS):
+                    xc = col_x[ci] if ci < len(col_x) else None
+                    if xc is not None:
+                        name_cells.append((cell, xc))
+            group_x = []
+            for (tc, rc) in groups:
+                xs = [col_x[c] for c in (tc, rc) if c is not None and c < len(col_x)]
+                group_x.append(sum(xs) / len(xs) if xs else None)
+            used = set()
+            for gi, gx in enumerate(group_x):
+                if gx is None:
                     continue
-                d = abs(nx - gx)
-                if d < bestd:
-                    best, bestd = ni, d
-            if best is not None:
-                used.add(best)
-                txt = name_cells[best][0]
-                parts = [p.strip() for p in txt.split("\n") if p.strip()]
-                bidder_names[gi] = parts[0] if parts else txt
-                bidder_locs[gi] = parts[1] if len(parts) > 1 else ""
+                best, bestd = None, 1e18
+                for ni, (txt, nx) in enumerate(name_cells):
+                    if ni in used:
+                        continue
+                    d = abs(nx - gx)
+                    if d < bestd:
+                        best, bestd = ni, d
+                if best is not None:
+                    used.add(best)
+                    bidder_names[gi], bidder_locs[gi] = _split_name(name_cells[best][0])
+        else:
+            # Excel/CSV: map by column-index proximity — check the group's own
+            # columns (and immediate neighbors) in the name row.
+            used_cols = set()
+            for gi, (tc, rc) in enumerate(groups):
+                cand_cols = []
+                for c in (tc, rc):
+                    if c is not None:
+                        cand_cols += [c - 1, c, c + 1]
+                found = None
+                # prefer cells with company hints, then any non-empty text
+                for c in cand_cols:
+                    if c in used_cols or c < first_bid_col or c >= len(name_row):
+                        continue
+                    cell = (name_row[c] or "").strip()
+                    if cell and any(h in cell.lower() for h in COMPANY_HINTS):
+                        found = (c, cell)
+                        break
+                if found is None:
+                    for c in cand_cols:
+                        if c in used_cols or c < first_bid_col or c >= len(name_row):
+                            continue
+                        cell = (name_row[c] or "").strip()
+                        if cell and len(cell) > 2:
+                            found = (c, cell)
+                            break
+                if found:
+                    used_cols.add(found[0])
+                    bidder_names[gi], bidder_locs[gi] = _split_name(found[1])
         if all(bidder_names):
             name_conf = "high"
         elif any(bidder_names):
@@ -798,6 +853,28 @@ def extract_pdf_tab(path, filename):
         if not bidder_names[gi]:
             bidder_names[gi] = f"Bidder {gi + 1}"
 
+    # description/qty/unit columns: tabs commonly lead with an item-number
+    # column, so detect from the header instead of assuming positions.
+    tab_desc_col = _find_col(header, ("description", "work description",
+                                      "scope", "scope of work",
+                                      "description of work", "item description",
+                                      "bid item", "work"))
+    if tab_desc_col is None:
+        for i, h in enumerate(header):
+            hn = norm_desc(h)
+            if "description" in hn or "scope" in hn:
+                tab_desc_col = i
+                break
+    if tab_desc_col is None:
+        tab_desc_col = 0
+    tab_qty_col = _find_col(header, ("qty", "quantity", "qnty"))
+    tab_unit_col = _find_col(header, ("unit", "uom", "u/m", "um"))
+    # qty/unit must come before the first bidder column
+    if tab_qty_col is not None and tab_qty_col >= first_bid_col:
+        tab_qty_col = None
+    if tab_unit_col is not None and tab_unit_col >= first_bid_col:
+        tab_unit_col = None
+
     # item rows
     items = []
     submitted, subtotals = [None] * n_bidders, [None] * n_bidders
@@ -807,13 +884,13 @@ def extract_pdf_tab(path, filename):
     for r in data[hdr_idx + 1:]:
         if not r or not any((c or "").strip() for c in r):
             continue
-        if is_total_row(r):
+        if is_total_row(r, tab_desc_col):
             for gi, (tc, _) in enumerate(groups):
                 v, st = parse_money(r[tc] if tc < len(r) else "")
                 if st == "priced":
                     submitted[gi] = v
             continue
-        if is_subtotal_row(r):
+        if is_subtotal_row(r, tab_desc_col):
             for gi, (tc, _) in enumerate(groups):
                 v, st = parse_money(r[tc] if tc < len(r) else "")
                 if st == "priced":
@@ -829,11 +906,14 @@ def extract_pdf_tab(path, filename):
                 if st == "priced":
                     taxes[gi] += v  # multiple tax rows (per schedule) accumulate
             continue
-        desc = (r[0] or "").strip()
+        desc = (r[tab_desc_col] if tab_desc_col < len(r) else "") or ""
+        desc = desc.strip()
         if not desc or len(desc) < 2:
             continue
-        qty_raw = (r[1] or "").strip() if len(r) > 1 else ""
-        unit_raw = (r[2] or "").strip() if len(r) > 2 else ""
+        qty_raw = ((r[tab_qty_col] if tab_qty_col is not None and tab_qty_col < len(r)
+                    else "") or "").strip()
+        unit_raw = ((r[tab_unit_col] if tab_unit_col is not None and tab_unit_col < len(r)
+                     else "") or "").strip()
         try:
             qty = float(clean_num_text(qty_raw)) if qty_raw else None
         except ValueError:
@@ -1058,48 +1138,124 @@ def extract_pdf_tab(path, filename):
 
 # ---------------------------------------------------------------- single-bid files (excel / csv / pdf-text)
 
+def _find_col(header, names):
+    """Find first column whose normalized header matches one of names."""
+    for i, h in enumerate(header):
+        if norm_desc(h) in names:
+            return i
+    return None
+
+
 def _rows_to_bidder(rows, filename):
-    """rows: list of lists (strings). Find item/amount table -> one bidder's items."""
+    """rows: list of lists (strings). Find item/amount table -> one bidder's items.
+
+    Detects the description column from the header (bid files commonly lead
+    with an item-number column — description is NOT always column 0).
+    Also extracts qty/unit when those columns exist."""
     # find header
     hdr = next((i for i, r in enumerate(rows) if is_header_row(r)), None)
     start = hdr + 1 if hdr is not None else 0
     header = rows[hdr] if hdr is not None else []
+    # description column: prefer explicit description/scope headers; bare
+    # "item"/"#" usually means the item NUMBER column, not the description.
+    desc_col = None
+    if header:
+        desc_col = _find_col(header, ("description", "work description",
+                                      "scope", "scope of work", "description of work",
+                                      "item description", "bid item", "work"))
+        if desc_col is None:
+            for i, h in enumerate(header):
+                hn = norm_desc(h)
+                if "description" in hn or "scope" in hn:
+                    desc_col = i
+                    break
+        if desc_col is None:
+            # "item" alone is ambiguous — use it only if no item-number-ish
+            # column exists elsewhere
+            item_col = _find_col(header, ("item", "item no", "item #", "#", "no",
+                                          "line", "line item", "ref"))
+            desc_col = 0 if item_col in (None, 0) else 1
+            if desc_col >= len(header):
+                desc_col = 0
+    if desc_col is None:
+        desc_col = 0
+    # qty / unit columns
+    qty_col = _find_col(header, ("qty", "quantity", "qnty", "q ty")) if header else None
+    unit_col = _find_col(header, ("unit", "uom", "u/m", "um")) if header else None
     # amount column: prefer TOTAL/AMOUNT, else last numeric-ish column
     amt_col = None
     if header:
         for i, h in enumerate(header):
-            if norm_desc(h) in ("total", "amount", "extended", "extended total", "bid", "price"):
+            if norm_desc(h) in ("total", "amount", "extended", "extended total",
+                                "bid", "price", "total price", "extended price",
+                                "line total"):
                 amt_col = i
                 break
+    skip_cols = {c for c in (desc_col, qty_col, unit_col) if c is not None}
     items = []
+    stated_total = None  # bidder's own stated total, captured from total rows
+    tax_total = 0.0  # accumulated tax rows (not line items, never summed)
+    has_tax = False
     for r in rows[start:]:
         if not r or not any(str(c or "").strip() for c in r):
             continue
-        if is_total_row(r) or is_subtotal_row(r) or is_tax_row(r):
+        if is_total_row(r, desc_col) or is_subtotal_row(r, desc_col) or is_tax_row(r):
+            # capture the stated total before skipping
+            if stated_total is None and is_total_row(r, desc_col):
+                for i in range(len(r) - 1, -1, -1):
+                    v, st = parse_money(r[i])
+                    if st == "priced" and v:
+                        stated_total = v
+                        break
+            if is_tax_row(r):
+                # tax is jurisdiction math, not a bid line — capture separately
+                for i in ([amt_col] if amt_col is not None else []) + \
+                         [j for j in range(len(r) - 1, -1, -1) if j != amt_col]:
+                    if i is None or i >= len(r):
+                        continue
+                    v, st = parse_money(r[i])
+                    if st == "priced" and v:
+                        tax_total += v
+                        has_tax = True
+                        break
             continue
-        desc = str(r[0] or "").strip()
+        desc = (r[desc_col] if desc_col < len(r) else "") or ""
+        desc = str(desc).strip()
         if not desc or len(desc) < 2:
             continue
-        # amount: chosen col or scan for last money-like cell
-        cands = []
+        # qty / unit
+        qty = None
+        if qty_col is not None and qty_col < len(r):
+            try:
+                qraw = clean_num_text(str(r[qty_col] or "").strip())
+                qty = float(qraw) if qraw else None
+            except ValueError:
+                qty = None
+        unit = str(r[unit_col] if unit_col is not None and unit_col < len(r)
+                    else "" or "").strip()
+        # amount: chosen col or scan for last money-like cell (skip desc/qty/unit)
         order = [amt_col] if amt_col is not None else []
-        order += [i for i in range(len(r) - 1, -1, -1) if i != amt_col]
+        order += [i for i in range(len(r) - 1, -1, -1)
+                  if i != amt_col and i not in skip_cols]
         val, status, rate = None, "not_priced", None
         for i in order:
             if i is None or i >= len(r):
                 continue
             v, st = parse_money(r[i])
-            if st in ("priced", "included", "not_priced"):
+            # "percent" is a real value (fee as %); "text" means keep scanning
+            # for a money cell (e.g. item-number column holds "4")
+            if st in ("priced", "included", "not_priced", "percent"):
                 val, status = v, st
                 break
         if status == "text":
             continue
-        items.append({"description": desc, "qty": None, "unit": "",
+        items.append({"description": desc, "qty": qty, "unit": unit,
                       "raw_amount": val, "raw_status": status})
     # bidder name from filename
     name = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ")
     return {"name": name, "location": "", "file": filename,
-            "items": items}
+            "items": items, "stated_total": stated_total,
+            "tax_total": tax_total, "has_tax": has_tax}
 
 
 def extract_excel(path, filename):
@@ -1115,6 +1271,13 @@ def extract_excel(path, filename):
             best = rows
     if not best:
         return None, ["empty workbook"]
+    # try multi-bidder tab first (one tabulation with all bidders)
+    data, errs = extract_tab_from_rows(best, None, filename)
+    if (data and len(data.get("bidders", [])) >= 2 and data.get("items")
+            and data.get("bidder_confidence") != "low"):
+        data["_is_tab"] = True
+        return data, []
+    # fall back to single-bidder mode
     return _rows_to_bidder(best, filename), []
 
 
@@ -1123,6 +1286,12 @@ def extract_csv_file(path, filename):
         rows = [r for r in csv.reader(f)]
     if not rows:
         return None, ["empty csv"]
+    # try multi-bidder tab first
+    data, errs = extract_tab_from_rows(rows, None, filename)
+    if (data and len(data.get("bidders", [])) >= 2 and data.get("items")
+            and data.get("bidder_confidence") != "low"):
+        data["_is_tab"] = True
+        return data, []
     return _rows_to_bidder(rows, filename), []
 
 
@@ -1186,7 +1355,8 @@ def merge_single_bids(bidders):
             if hit is None:
                 dl = (it["description"] or "").lower()
                 mn, mx = parse_minmax(it["description"])
-                hit = {"description": it["description"], "qty": None, "unit": "",
+                hit = {"description": it["description"], "qty": it.get("qty"),
+                       "unit": it.get("unit") or "",
                        "row_type": "amount", "comparable": True, "base_value": None,
                        "deduct": "deduct" in dl,
                        "alternate": ("alternate" in dl or "in lieu of" in dl) and "deduct" not in dl,
@@ -1277,9 +1447,15 @@ def upload():
                     warnings += errs + errs2
                 elif ext in (".xlsx", ".xls"):
                     b, errs2 = extract_excel(path, filename)
+                    if isinstance(b, dict) and b.pop("_is_tab", False):
+                        # multi-bidder tab found in this workbook
+                        return jsonify(b)
                     warnings += errs2
                 else:
                     b, errs2 = extract_csv_file(path, filename)
+                    if isinstance(b, dict) and b.pop("_is_tab", False):
+                        # multi-bidder tab found in this CSV
+                        return jsonify(b)
                     warnings += errs2
                 if b:
                     bidders.append(b)
@@ -1290,7 +1466,6 @@ def upload():
         items = merge_single_bids(bidders)
         # Round 4 fix (Sim 25): flag cross-scope comparisons
         scope_notes = _apply_scope_comparability(items, bidders)
-        # bids mode: no submitted totals to verify against
         n_b = len(bidders)
         bidder_excluded = []
         for bi in range(n_b):
@@ -1298,6 +1473,38 @@ def upload():
                          if it["values"][bi]["status"] == "priced"
                          and it["values"][bi]["amount"] not in (None, 0))
             bidder_excluded.append(priced == 0)
+        # bids mode: verify against each file's own stated total when present.
+        # Tax-aware: try tax-inclusive first, then tax-exclusive (same as tab mode).
+        def _bids_calc(bi):
+            return sum(it["values"][bi]["amount"] for it in items
+                       if it.get("row_type", "amount") == "amount"
+                       and not it.get("deduct") and not it.get("alternate")
+                       and it["values"][bi]["status"] in ("priced", "included")
+                       and it["values"][bi]["amount"] is not None)
+
+        bids_total_states = []
+        bids_submitted = []
+        for bi, b in enumerate(bidders):
+            calc = _bids_calc(bi)
+            tax = b.get("tax_total", 0.0) or 0.0
+            stated = b.get("stated_total")
+            bids_submitted.append(stated)
+            state = "unparseable"
+            if stated is not None and calc > 0:
+                tol = max(1.0, abs(stated) * 0.002)
+                if abs((calc + tax) - stated) <= tol:
+                    state = "verified"
+                elif abs(calc - stated) <= tol:
+                    state = "verified"
+                else:
+                    state = "mismatch"
+            bids_total_states.append(state)
+            if state == "mismatch":
+                warnings.append(
+                    f"{b['name']}: line items sum to ${calc:,.2f}"
+                    + (f" + ${tax:,.2f} tax" if tax else "") +
+                    f" but the file states ${stated:,.2f} — showing both, "
+                    f"verify which is correct")
         basis_state, basis_notes = compute_basis_state(items)
         low_conf_counts = [sum(1 for it in items if it["values"][bi]["confidence"] == "low")
                            for bi in range(n_b)]
@@ -1314,7 +1521,7 @@ def upload():
                                   [b["name"] for b in bidders],
                                   bids_extraction_quality, low_conf_counts,
                                   blocked=(basis_state == "unknown"),
-                                  total_states=["unparseable"] * n_b)
+                                  total_states=bids_total_states)
         warnings_b = warnings + [
             "single-bid files: bidder names taken from filenames - please confirm"]
         if ranking["state"] == "blocked":
@@ -1325,17 +1532,21 @@ def upload():
             warnings_b.append("⛔ " + ranking["note"])
         if scope_notes:
             warnings_b.append("⛔ Cross-scope warning: " + "; ".join(scope_notes))
+        # bids-mode taxes: captured per-file, never mixed into line items
+        bids_taxes = [b.get("tax_total", 0.0) or 0.0 for b in bidders]
+        bids_has_tax = any(b.get("has_tax") for b in bidders)
         return jsonify({
             "project_name": "Bid package",
             "mode": "bids",
             "bidders": [{"name": b["name"], "location": b.get("location", ""),
-                         "file": b["file"], "excluded": ex, "total_state": "unparseable"}
-                        for b, ex in zip(bidders, bidder_excluded)],
+                         "file": b["file"], "excluded": ex, "total_state": ts}
+                        for b, ex, ts in zip(bidders, bidder_excluded,
+                                             bids_total_states)],
             "items": items,
-            "submitted_totals": [None] * len(bidders),
+            "submitted_totals": bids_submitted,
             "subtotals": [None] * len(bidders),
-            "taxes": [0.0] * len(bidders),
-            "has_tax_rows": False,
+            "taxes": bids_taxes,
+            "has_tax_rows": bids_has_tax,
             "tax_rate_detected": None,
             "tax_basis_detected": [None] * len(bidders),
             "has_substitution_alternates": (
