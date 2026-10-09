@@ -46,6 +46,13 @@ def parse_money(raw):
     low = s.lower()
     if low in ("included", "incl", "incl.", "nic", "no charge", "free", "inc."):
         return 0.0, "included"
+    # percent detection: "1.79%" or "1.79 percent"
+    pct = re.match(r"^\s*\(?\s*(\d+(?:\.\d+)?)\s*%\s*\)?\s*$", s)
+    if pct:
+        try:
+            return float(pct.group(1)) / 100.0, "percent"
+        except ValueError:
+            pass
     neg = False
     t = s.strip()
     if t.startswith("(") and t.endswith(")"):
@@ -58,6 +65,35 @@ def parse_money(raw):
         return (-v if neg else v), "priced"
     except ValueError:
         return None, "text"
+
+
+def detect_row_type(description, header_text=""):
+    """Classify a row: amount | rate | percent | lump | fee_component.
+    Never sum rate/percent rows into totals."""
+    d = (description or "").lower()
+    h = (header_text or "").lower()
+    combined = d + " " + h
+    # percent rows: explicit % or "percent"/"fee %" language
+    if "%" in description or "percent" in combined or re.search(r"\bfee\s*%", combined):
+        return "percent"
+    # rate rows: $/unit language without a total
+    if re.search(r"\$\s*/\s*\w|per\s+(hour|hr|lf|sf|unit|each|sq|ton|day)", combined):
+        return "rate"
+    # fee components (CMAR/design-build): fee, general conditions, etc.
+    if re.search(r"\b(fee|general conditions|preconstruction|cm fee|construction fee)\b", d):
+        return "fee_component"
+    return "amount"
+
+
+def verify_cell(qty, rate, amount, tolerance=0.02):
+    """Three-state verification: verified | mismatch | unverified.
+    Confidence comes from arithmetic, never from OCR."""
+    if qty is not None and rate is not None and amount is not None:
+        expected = qty * rate
+        if abs(expected - amount) <= max(tolerance, abs(expected) * 0.001):
+            return "verified"
+        return "mismatch"
+    return "unverified"
 
 
 def norm_desc(s):
@@ -286,43 +322,115 @@ def extract_pdf_tab(path, filename):
         except ValueError:
             qty = None
         vals = []
+        row_type = detect_row_type(desc, " ".join(header))
+        # comparable flag: qualifier words escalate to human review
+        comparable = True
+        qualifiers = ("only", "excluding", "not including", "per vendor", "if necessary",
+                      "alternate", "deduct", "additive")
+        if any(q in desc.lower() for q in qualifiers):
+            comparable = False
         for gi, (tc, rc) in enumerate(groups):
             amt_raw = r[tc] if tc < len(r) else ""
             rate_raw = r[rc] if rc is not None and rc < len(r) else ""
             amt, st = parse_money(amt_raw)
             rate, _ = parse_money(rate_raw)
+            verbatim = str(amt_raw or "").strip()
+            # confidence: high if verbatim parses cleanly, medium if repaired, low if ambiguous
+            confidence = "high"
+            if st == "text":
+                confidence = "low"
+            elif verbatim != clean_num_text(verbatim):
+                confidence = "medium"
+            # verification: check qty x rate = amount where possible
+            verify = verify_cell(qty, rate, amt) if st == "priced" else "unverified"
             vals.append({"amount": amt, "rate": rate, "status": st,
-                         "raw": str(amt_raw or "").strip()})
+                         "raw": verbatim, "verbatim": verbatim,
+                         "confidence": confidence, "verify": verify})
         # skip rows with no priced data at all (section headers etc.)
         if not any(v["status"] in ("priced", "included") for v in vals):
             # keep rows where at least one bidder has not_priced but others priced
             if all(v["status"] == "not_priced" or v["status"] == "text" for v in vals):
                 continue
-        items.append({"description": desc, "qty": qty, "unit": unit_raw, "values": vals})
+        items.append({"description": desc, "qty": qty, "unit": unit_raw, "values": vals,
+                        "row_type": row_type, "comparable": comparable,
+                        "base_value": None})  # base_value set for percent rows when known
 
-    # math verification warnings
+    # math verification with three-state totals (verified / mismatch / unparseable)
+    # NEVER sum rate/percent/fee_component rows into totals
+    total_states = []
     for gi in range(n_bidders):
         calc = sum(v["amount"] for it in items for v in [it["values"][gi]]
-                   if v["status"] in ("priced", "included") and v["amount"] is not None)
+                   if it.get("row_type", "amount") == "amount"
+                   and v["status"] in ("priced", "included") and v["amount"] is not None)
         base = subtotals[gi] if subtotals[gi] is not None else submitted[gi]
-        if base is not None and base != 0:
-            if abs(calc - base) > max(1.0, abs(base) * 0.002):
+        n_amount_rows = sum(1 for it in items if it.get("row_type", "amount") == "amount")
+        if base is not None and n_amount_rows > 0:
+            if abs(calc - base) <= max(1.0, abs(base) * 0.002):
+                total_states.append("verified")
+            else:
+                total_states.append("mismatch")
                 warnings.append(
                     f"{bidder_names[gi]}: line items sum to "
                     f"${calc:,.2f} but {'subtotal' if subtotals[gi] is not None else 'total'} "
-                    f"shows ${base:,.2f} - possible math error in source")
+                    f"shows ${base:,.2f} - showing BOTH, human must adjudicate")
+        elif n_amount_rows == 0:
+            total_states.append("unparseable")
+        else:
+            total_states.append("unparseable")
+
+    # disqualified / all-zero bidder detection
+    bidder_excluded = []
+    for gi in range(n_bidders):
+        priced = sum(1 for it in items
+                     if it["values"][gi]["status"] == "priced"
+                     and it["values"][gi]["amount"] not in (None, 0))
+        bidder_excluded.append(priced == 0)
+        if priced == 0:
+            warnings.append(
+                f"{bidder_names[gi]}: no priced line items - excluded from "
+                f"low-bidder calculation and statistics")
+
+    # value-weighted ranking: weight rows by dollar value, not count
+    # score = sum over rows of (bidder_price / median_price * row_median_value)
+    # lower score = better value
+    value_scores = []
+    for gi in range(n_bidders):
+        if bidder_excluded[gi]:
+            value_scores.append(None)
+            continue
+        score = 0.0
+        for it in items:
+            if it.get("row_type", "amount") != "amount":
+                continue
+            row_vals = [it["values"][g]["amount"] for g in range(n_bidders)
+                        if not bidder_excluded[g]
+                        and it["values"][g]["status"] == "priced"
+                        and it["values"][g]["amount"] not in (None, 0)]
+            if len(row_vals) < 2:
+                continue
+            row_vals.sort()
+            med = row_vals[len(row_vals) // 2]
+            row_med_val = med  # weight by median dollar value of this row
+            my_amt = it["values"][gi]["amount"]
+            if my_amt is None or my_amt <= 0 or med <= 0:
+                continue
+            score += (my_amt / med) * row_med_val
+        value_scores.append(score if score > 0 else None)
 
     return {
         "project_name": os.path.splitext(filename)[0].replace("_", " ").replace("-", " "),
         "mode": "tab",
-        "bidders": [{"name": n, "location": l, "file": filename}
-                    for n, l in zip(bidder_names, bidder_locs)],
+        "bidders": [{"name": n, "location": l, "file": filename,
+                     "excluded": ex, "total_state": ts}
+                    for n, l, ex, ts in zip(bidder_names, bidder_locs,
+                                           bidder_excluded, total_states)],
         "items": items,
         "submitted_totals": submitted,
         "subtotals": subtotals,
         "taxes": taxes,
         "warnings": warnings,
         "bidder_confidence": name_conf,
+        "value_scores": value_scores,
     }, []
 
 
@@ -418,11 +526,15 @@ def merge_single_bids(bidders):
             hit = next((m for m in items if desc_match(m["description"], it["description"])), None)
             if hit is None:
                 hit = {"description": it["description"], "qty": None, "unit": "",
+                       "row_type": "amount", "comparable": True, "base_value": None,
                        "values": [{"amount": None, "rate": None, "status": "not_priced",
-                                   "raw": ""} for _ in bidders]}
+                                   "raw": "", "verbatim": "", "confidence": "low",
+                                   "verify": "unverified"} for _ in bidders]}
                 items.append(hit)
             hit["values"][bi] = {"amount": it["raw_amount"], "rate": None,
-                                 "status": it["raw_status"], "raw": ""}
+                                 "status": it["raw_status"], "raw": "",
+                                 "verbatim": "", "confidence": "medium",
+                                 "verify": "unverified"}
     return items
 
 
@@ -489,11 +601,20 @@ def upload():
                                warnings=warnings), 422
 
         items = merge_single_bids(bidders)
+        # bids mode: no submitted totals to verify against
+        n_b = len(bidders)
+        bidder_excluded = []
+        for bi in range(n_b):
+            priced = sum(1 for it in items
+                         if it["values"][bi]["status"] == "priced"
+                         and it["values"][bi]["amount"] not in (None, 0))
+            bidder_excluded.append(priced == 0)
         return jsonify({
             "project_name": "Bid package",
             "mode": "bids",
             "bidders": [{"name": b["name"], "location": b.get("location", ""),
-                         "file": b["file"]} for b in bidders],
+                         "file": b["file"], "excluded": ex, "total_state": "unparseable"}
+                        for b, ex in zip(bidders, bidder_excluded)],
             "items": items,
             "submitted_totals": [None] * len(bidders),
             "subtotals": [None] * len(bidders),
@@ -501,6 +622,7 @@ def upload():
             "warnings": warnings + [
                 "single-bid files: bidder names taken from filenames - please confirm"],
             "bidder_confidence": "low",
+            "value_scores": [None] * len(bidders),
         })
     finally:
         for path, _, _ in saved:
