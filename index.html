@@ -34,6 +34,24 @@
     padding:2px 8px; border-radius:4px; }
   .badge-rowtype { font-size:10px; color:#64748b; font-weight:600; text-transform:uppercase;
     letter-spacing:.05em; }
+  .badge-basis { font-size:11px; font-weight:700; padding:3px 10px; border-radius:9999px; }
+  .badge-basis-verified { background:#e5f4eb; color:#26734d; }
+  .badge-basis-suspect { background:#fef3e2; color:#92400e; }
+  .badge-basis-unknown { background:#fef2f2; color:#b91c1c; }
+  .badge-math { font-size:11px; font-weight:700; padding:3px 10px; border-radius:9999px;
+    background:#eef2ff; color:#3730a3; }
+  .banner-blocked { background:#fef2f2; border:2px solid #fca5a5; border-radius:12px; padding:20px; }
+  .banner-tooclose { background:#fffbeb; border:2px solid #fcd34d; border-radius:12px; padding:16px; }
+  .gate-panel { background:#eff6ff; border:2px solid #93c5fd; border-radius:12px; padding:16px; }
+  .cell-ambiguous { box-shadow:inset 0 0 0 2px #dc2626; }
+  .badge-minviol { background:#fef2f2; color:#b91c1c; font-size:10px; font-weight:700;
+    padding:1px 6px; border-radius:4px; display:inline-block; margin-top:2px; }
+  .badge-deduct { font-size:10px; color:#7c3aed; font-weight:700; text-transform:uppercase; }
+  .badge-alternate { font-size:10px; color:#0369a1; font-weight:700; text-transform:uppercase; }
+  .badge-provisional { background:#fef3e2; color:#92400e; font-size:11px; font-weight:700;
+    padding:2px 8px; border-radius:4px; }
+  .freq-input { width:70px; border:1px solid #cbd5e1; border-radius:6px; padding:4px 8px;
+    font-size:13px; text-align:right; }
   .totals-low { background:#e5f4eb !important; }
   th.sticky-col, td.sticky-col { position:sticky; left:0; background:#fff; z-index:1;
     box-shadow:1px 0 0 #e5e7eb; }
@@ -217,7 +235,15 @@
 <script>
 (function(){
   "use strict";
-  var state = { data:null, names:[], adjustments:{} };  // adjustments: {"bi:ii": amount}
+  var state = { data:null, names:[], adjustments:{},   // adjustments: {"bi:ii": amount}
+                choices:{},        // ambiguous-cell picks: {"bi:ii": amount}
+                frequencies:{},    // service-bid visits-per-period: {ii: number}
+                userStatus:{},      // bidder responsiveness: {bi: "responsive"|"nonresponsive"|"didnotbid"}
+                taxBasis:"included",   // "included" | "excluded"
+                taxRate:0,
+                awardBasis:"base",     // "base" | "base_plus_alternate"
+                deductsConfirmed:false,
+                provisional:false };
   var editCell = null;
 
   var $ = function(id){ return document.getElementById(id); };
@@ -283,7 +309,14 @@
         if (!res.ok) throw new Error(res.body.error || "Extraction failed");
         state.data=res.body;
         state.names=res.body.bidders.map(function(b){return b.name;});
-        state.adjustments={};
+        state.adjustments={}; state.choices={}; state.frequencies={};
+        state.userStatus={}; state.provisional=false; state.deductsConfirmed=false;
+        state.awardBasis="base";
+        // tax basis default: follow what the tab's own totals imply
+        var tb=(res.body.tax_basis_detected||[]).filter(Boolean);
+        state.taxBasis = tb.length && tb.every(function(x){return x==="tax_excluded";})
+          ? "excluded" : "included";
+        state.taxRate = res.body.tax_rate_detected || 0;
         renderConfirm();
         show("confirm-section"); hide("processing-section");
       })
@@ -297,32 +330,59 @@
   function show(id){ $(id).classList.remove("hidden"); }
   function hide(id){ $(id).classList.add("hidden"); }
 
+  /* Effective exclusion: backend auto-exclude OR user-marked non-responsive/did-not-bid */
+  function isExcluded(bi){
+    var b=state.data.bidders[bi];
+    if (b && b.excluded) return true;
+    var s=state.userStatus[bi];
+    return s==="nonresponsive" || s==="didnotbid";
+  }
+  function userStatusBadge(bi){
+    var s=state.userStatus[bi];
+    if (s==="nonresponsive") return ' <span class="badge-excluded">non-responsive</span>';
+    if (s==="didnotbid") return ' <span class="badge-excluded">did not bid</span>';
+    return "";
+  }
+
   /* ---------- bidder confirmation ---------- */
   function renderConfirm(){
     var d=state.data;
     var cards=d.bidders.map(function(b,i){
       var calc=d.items.reduce(function(s,it){
         if ((it.row_type||"amount")!=="amount") return s;  // never sum non-amount rows
+        if (it.deduct || it.alternate) return s;           // never sum scenario rows
         var v=it.values[i];
         return s+((v.status==="priced"||v.status==="included")&&v.amount!=null?v.amount:0);
       },0);
       var conf=d.bidder_confidence==="high"
         ? '<span class="text-xs font-semibold text-green-700 bg-green-50 px-2 py-0.5 rounded">high confidence</span>'
         : '<span class="text-xs font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded">please verify</span>';
-      var ex=b.excluded
-        ? '<div class="mt-2"><span class="badge-excluded">⚠ will be excluded from statistics — no priced items</span></div>' : "";
+      var ex=isExcluded(i)
+        ? '<div class="mt-2"><span class="badge-excluded">⚠ excluded from statistics'+
+          (state.userStatus[i]==="nonresponsive"?" — you marked non-responsive":
+           state.userStatus[i]==="didnotbid"?" — you marked did-not-bid":
+           " — no priced items")+'</span></div>' : "";
       var ts=b.total_state==="verified"
         ? '<span class="badge-verify badge-verified">total ✓</span>'
         : b.total_state==="mismatch"
         ? '<span class="badge-verify badge-mismatch">total ✗ mismatch</span>'
         : '<span class="badge-verify badge-unverified">total ?</span>';
+      var taxLine=(d.has_tax_rows && d.taxes && d.taxes[i])
+        ? '<div class="text-xs text-slate-500 mt-1">Extracted tax: <span class="mono">'+fmt(d.taxes[i])+'</span></div>' : "";
+      var cur=state.userStatus[i]||"responsive";
       return '<div class="border border-slate-200 rounded-lg p-4">'+
         '<div class="flex items-center justify-between mb-2"><span class="text-xs font-bold text-slate-400">BIDDER '+(i+1)+'</span>'+conf+'</div>'+
         '<input type="text" data-bidder="'+i+'" value="'+escapeHtml(state.names[i])+'" '+
         ' class="w-full border border-slate-300 rounded-lg px-3 py-2 font-semibold" />'+
         (b.location?'<div class="text-xs text-slate-400 mt-1">'+escapeHtml(b.location)+'</div>':"")+
         '<div class="text-xs text-slate-500 mt-2">File: '+escapeHtml(b.file||"")+
-        ' · <span class="mono">'+fmt(calc)+'</span> in line items '+ts+'</div>'+ex+'</div>';
+        ' · <span class="mono">'+fmt(calc)+'</span> in line items '+ts+'</div>'+taxLine+
+        '<label class="block text-xs font-semibold text-slate-500 mt-3 mb-1">RESPONSIVENESS</label>'+
+        '<select data-status="'+i+'" class="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm">'+
+        '<option value="responsive"'+(cur==="responsive"?" selected":"")+'>Responsive — include in ranking</option>'+
+        '<option value="nonresponsive"'+(cur==="nonresponsive"?" selected":"")+'>Non-responsive — exclude from ranking</option>'+
+        '<option value="didnotbid"'+(cur==="didnotbid"?" selected":"")+'>Did not bid — exclude</option>'+
+        '</select>'+ex+'</div>';
     }).join("");
     $("bidder-cards").innerHTML=cards;
     // low-confidence cell summary for review gate
@@ -357,11 +417,58 @@
         nc.length+' rows</strong> flagged "not directly comparable" (qualifier words detected: only/excluding/not including/etc.). '+
         'They will show a prominent warning in the table.</div>';
     }
+    // tax basis card: tax is a jurisdiction rule, never inferred silently
+    if (d.has_tax_rows){
+      var ratePct=d.tax_rate_detected!=null ? (d.tax_rate_detected*100).toFixed(2)+"%" : "unknown rate";
+      var taxRows=d.bidders.map(function(b,i){
+        return '<div class="flex justify-between text-xs py-0.5"><span>'+escapeHtml(state.names[i])+
+          '</span><span class="mono">'+fmt(d.taxes?d.taxes[i]:0)+'</span></div>';
+      }).join("");
+      html+='<div class="p-4 rounded-lg bg-blue-50 border border-blue-200 text-sm mb-2">'+
+        '<strong>🧾 Tax detected in this tab ('+ratePct+').</strong>'+
+        '<div class="mt-2 max-w-xs">'+taxRows+'</div>'+
+        '<div class="mt-3 text-xs text-slate-600">Tax applies per the tab\u2019s own schedule rules — '+
+        'it is <strong>not</strong> a bid and never enters unit-rate statistics.</div>'+
+        '<label class="block text-xs font-semibold text-slate-500 mt-3 mb-1">AWARD BASIS</label>'+
+        '<div class="flex gap-4 text-sm">'+
+        '<label><input type="radio" name="taxbasis" value="included"'+(state.taxBasis==="included"?" checked":"")+'/> Tax-included totals</label>'+
+        '<label><input type="radio" name="taxbasis" value="excluded"'+(state.taxBasis==="excluded"?" checked":"")+'/> Tax-excluded totals</label>'+
+        '</div></div>';
+    }
+    // substitution-alternate gate
+    if (d.has_substitution_alternates){
+      var nD=d.items.filter(function(it){return it.deduct;}).length;
+      var nA=d.items.filter(function(it){return it.alternate;}).length;
+      html+='<div class="gate-panel text-sm mb-2"><strong>🔀 Substitution alternate detected.</strong> '+
+        'This tab has '+nD+' deduct row(s) and '+nA+' alternate row(s). Deducts are bidder-specific — '+
+        'adding the alternate without subtracting each bidder\u2019s own deducts overstates every total by six figures. '+
+        '<div class="mt-2">The comparison will show <strong>base totals only</strong> unless you switch the award basis '+
+        'on the results screen and confirm the deduct mapping.</div></div>';
+    }
+    // basis state panel
+    if (d.basis_state==="unknown"){
+      html+='<div class="banner-blocked text-sm mb-2"><strong>⛔ Comparison basis unknown.</strong> '+
+        escapeHtml((d.basis_notes||[]).join(" "))+
+        '<div class="mt-2">The results screen will <strong>refuse to rank</strong> these bids. '+
+        'You can enter a visits-per-period frequency there to see a provisional comparison.</div></div>';
+    } else if (d.basis_state==="suspect"){
+      html+='<div class="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm mb-2">⚠ <strong>Basis check:</strong> '+
+        escapeHtml((d.basis_notes||[]).join(" "))+'</div>';
+    }
     w.innerHTML=html;
+    // tax basis radios
+    Array.prototype.forEach.call(w.querySelectorAll('input[name="taxbasis"]'), function(r){
+      r.addEventListener("change", function(){ state.taxBasis=r.value; });
+    });
   }
   $("bidder-cards").addEventListener("input", function(e){
     var inp=e.target.closest("[data-bidder]"); if(!inp) return;
     state.names[Number(inp.dataset.bidder)]=inp.value;
+  });
+  $("bidder-cards").addEventListener("change", function(e){
+    var sel=e.target.closest("[data-status]"); if(!sel) return;
+    state.userStatus[Number(sel.dataset.status)]=sel.value;
+    renderConfirm();  // refresh exclusion badges
   });
   $("confirm-btn").addEventListener("click", function(){
     renderTable(); show("results-section"); hide("confirm-section");
@@ -378,25 +485,48 @@
 
   function isOutlier(ii, bi){
     var d=state.data;
-    if (d.bidders[bi]&&d.bidders[bi].excluded) return false;
+    if (isExcluded(bi)) return false;
     // two-sided: flag both high AND low outliers
     var vals=d.items[ii].values
-      .map(function(v,idx){ return (d.bidders[idx]&&d.bidders[idx].excluded)?null:v.amount; })
+      .map(function(v,idx){ return isExcluded(idx)?null:v.amount; })
       .filter(function(a){return a!=null && a>0;});
     if (vals.length<3) return false;
     var med=median(vals), amt=d.items[ii].values[bi].amount;
     if (amt==null||amt<=0) return false;
     return amt>med*2 || amt<med*0.5;
   }
+  function effAmount(bi, ii){
+    // effective cell amount: user's ambiguous-cell pick wins, else extracted
+    var k=bi+":"+ii;
+    if (state.choices[k]!=null) return state.choices[k];
+    var v=state.data.items[ii].values[bi];
+    return (v.status==="priced"||v.status==="included")&&v.amount!=null ? v.amount : 0;
+  }
   function calcTotal(bi){
-    // NEVER sum rate/percent/fee_component rows — only amount rows
-    var t=state.data.items.reduce(function(s,it){
+    // NEVER sum rate/percent/fee_component rows — only amount rows.
+    // NEVER sum deduct/alternate scenario rows into the base total.
+    var t=state.data.items.reduce(function(s,it,ii){
       if ((it.row_type||"amount")!=="amount") return s;
-      var v=it.values[bi];
-      return s+((v.status==="priced"||v.status==="included")&&v.amount!=null?v.amount:0);
+      if (it.deduct || it.alternate) return s;
+      return s + effAmount(bi, ii);
     },0);
     Object.keys(state.adjustments).forEach(function(k){
       var parts=k.split(":"); if(Number(parts[0])===bi) t+=state.adjustments[k];
+    });
+    return t;
+  }
+  function calcTax(bi){
+    var d=state.data;
+    return (d.has_tax_rows && d.taxes && d.taxes[bi]) ? d.taxes[bi] : 0;
+  }
+  function combinedAlternateTotal(bi){
+    // base + deducts (negative) + alternates, per bidder — Sim 11 math.
+    // Only valid after the user confirms the deduct mapping.
+    var t=calcTotal(bi);
+    state.data.items.forEach(function(it,ii){
+      if ((it.row_type||"amount")!=="amount") return;
+      if (!it.deduct && !it.alternate) return;
+      t += effAmount(bi, ii);
     });
     return t;
   }
@@ -414,6 +544,21 @@
     var adj=adjFor(bi,ii);
     var cls="cell-btn", inner="";
     var rowType=it.row_type||"amount";
+    // user-resolved ambiguous cell
+    var k=bi+":"+ii;
+    if (v.status==="ambiguous" && state.choices[k]==null){
+      var opts=(v.alternatives||[]).map(function(a,ai){
+        return '<button data-amb="'+k+'" data-amb-val="'+a.amount+'" '+
+          'class="mono font-bold text-sm underline decoration-red-500 decoration-2 px-1">'+fmt(a.amount)+'</button>';
+      }).join('<span class="text-slate-400 text-xs"> or </span>');
+      inner='<div class="text-[11px] font-bold text-red-700">⚠ 2 values in source — pick:</div><div class="mt-1">'+opts+'</div>'+
+        '<div class="text-[10px] text-slate-400 mt-1">as-bid vs corrected</div>';
+      cls+=" cell-ambiguous";
+      var label=state.names[bi]+", "+it.description;
+      return '<div class="'+cls+'" aria-label="'+escapeHtml(label)+'">'+inner+'</div>';
+    }
+    var effAmt = state.choices[k]!=null ? state.choices[k]
+      : (v.status==="priced"||v.status==="included")&&v.amount!=null ? v.amount : null;
     if (v.status==="not_priced"){ cls+=" cell-missing"; inner='<span class="mono">—</span><div class="text-[11px]">not priced</div>'; }
     else if (v.status==="included"){ cls+=" cell-included"; inner='<span class="mono">Incl.</span>'; }
     else if (v.status==="percent"&&v.amount!=null){
@@ -423,32 +568,61 @@
       if (it.base_value) inner+='<div class="text-[11px] text-slate-400">× '+fmt(it.base_value)+'</div>';
       inner+='<div class="badge-rowtype">percent · not summed</div>';
     }
-    else if (v.amount!=null){
-      var disp=v.amount+adj;
+    else if (effAmt!=null){
+      var disp=effAmt+adj;
       inner='<span class="mono font-semibold">'+fmt(disp)+'</span>'+verifyBadge(v);
+      if (state.choices[k]!=null) inner+='<div class="text-[10px] text-slate-400">you picked this value</div>';
       if (adj) inner+='<div class="text-[11px]" style="color:var(--orange-dark)">'+fmtSigned(adj)+' adj</div>';
       else if (v.rate!=null) inner+='<div class="text-[11px] text-slate-400">'+fmt(v.rate)+' '+
         escapeHtml(it.unit||"")+'</div>';
+      if (v.min_violation) inner+='<div><span class="badge-minviol">⚠ below '+
+        fmt(it.min_bid)+' minimum — responsiveness risk</span></div>';
+      if (v.max_violation) inner+='<div><span class="badge-minviol">⚠ above '+
+        fmt(it.max_bid)+' maximum</span></div>';
+      // provisional per-visit rate (service bids with user-supplied frequency)
+      if (state.provisional && state.frequencies[ii]>0){
+        inner+='<div class="text-[11px] text-blue-700 font-semibold">≈ '+fmt(effAmt/state.frequencies[ii])+' /visit</div>';
+      }
       if (isOutlier(ii,bi)) cls+=" cell-outlier";
     } else { cls+=" cell-missing"; inner='<span class="mono">—</span>'; }
     if (adj) cls+=" cell-adjusted";
-    if (v.confidence==="low") cls+=" cell-lowconf";
-    var label=state.names[bi]+", "+it.description;
-    return '<button class="'+cls+'" data-bi="'+bi+'" data-ii="'+ii+'" aria-label="'+escapeHtml(label)+'">'+inner+'</button>';
+    if (v.confidence==="low" && v.status!=="ambiguous") cls+=" cell-lowconf";
+    var label2=state.names[bi]+", "+it.description;
+    return '<button class="'+cls+'" data-bi="'+bi+'" data-ii="'+ii+'" aria-label="'+escapeHtml(label2)+'">'+inner+'</button>';
+  }
+
+  function mathBadgeHtml(d){
+    var verified=(d.bidders||[]).filter(function(b){return b.total_state==="verified";}).length;
+    var n=(d.bidders||[]).length;
+    return '<span class="badge-math" title="Arithmetic: do line items sum to the stated totals?">Math: '+
+      verified+'/'+n+' verified</span>';
+  }
+  function basisBadgeHtml(d){
+    var bs=d.basis_state||"suspect";
+    var cls=bs==="verified"?"badge-basis-verified":bs==="unknown"?"badge-basis-unknown":"badge-basis-suspect";
+    var label=bs==="verified"?"Basis ✓":bs==="unknown"?"Basis ✗ unknown":"Basis ⚠ check";
+    var title=bs==="verified"?"Comparison basis is sound: quantities and scope are comparable"
+      :bs==="unknown"?"Comparison basis is void: "+((d.basis_notes||[]).join(" "))
+      :"Comparison basis needs review: "+((d.basis_notes||[]).join(" "));
+    return '<span class="badge-basis '+cls+'" title="'+escapeHtml(title)+'">'+label+'</span>';
   }
 
   function renderTable(){
     var d=state.data, n=d.bidders.length;
+    var ranking=d.ranking||{state:"ranked",winner:null};
     var totals=[], i, bi;
-    for (bi=0;bi<n;bi++) totals.push(d.bidders[bi].excluded?null:calcTotal(bi));
-    // low bidder: only among non-excluded
+    for (bi=0;bi<n;bi++) totals.push(isExcluded(bi)?null:calcTotal(bi));
+    // low bidder among non-excluded, on adjusted totals — highlighted ONLY when ranked
     var validTotals=totals.map(function(t,idx){return t==null?null:{t:t,idx:idx};}).filter(Boolean);
     var low=validTotals.length? validTotals.reduce(function(a,b){return a.t<b.t?a:b;}).idx : -1;
+    var ranked = ranking.state==="ranked";
+    var blocked = ranking.state==="blocked";
+    var tooClose = ranking.state==="too_close";
 
     var head='<tr><th class="sticky-col text-left p-3 font-bold" style="color:var(--navy)">Scope item</th>'+
       d.bidders.map(function(b,b2){
-        var ex=b.excluded?' <span class="badge-excluded">excluded</span>':"";
-        return '<th class="p-3 text-right font-bold" style="color:var(--navy)">'+escapeHtml(state.names[b2])+ex+'</th>';
+        var ex=isExcluded(b2)?' <span class="badge-excluded">excluded</span>':"";
+        return '<th class="p-3 text-right font-bold" style="color:var(--navy)">'+escapeHtml(state.names[b2])+ex+userStatusBadge(b2)+'</th>';
       }).join("")+'</tr>';
     $("results-head").innerHTML=head;
 
@@ -459,11 +633,16 @@
       var qty=it.qty!=null? '<div class="text-[11px] text-slate-400 mono">'+it.qty+' '+escapeHtml(it.unit||"")+'</div>' : "";
       var rt=(it.row_type&&it.row_type!=="amount")? '<div class="badge-rowtype">'+it.row_type+'</div>' : "";
       var nc=it.comparable===false? '<div><span class="badge-noncomp">⚠ not directly comparable — verify scope</span></div>' : "";
+      var sc=it.deduct? '<div><span class="badge-deduct">↩ deduct — scenario row, not in base total</span></div>'
+        : it.alternate? '<div><span class="badge-alternate">🔀 alternate — scenario row, not in base total</span></div>' : "";
+      var mm=(it.min_bid!=null||it.max_bid!=null)
+        ? '<div class="text-[10px] text-slate-400">bid limits: '+(it.min_bid!=null?"min "+fmt(it.min_bid):"")+(it.min_bid!=null&&it.max_bid!=null?" · ":"")+(it.max_bid!=null?"max "+fmt(it.max_bid):"")+'</div>' : "";
       body+='<tr><td class="sticky-col p-3 border-t border-slate-100"><div class="font-semibold text-[13px]">'+
-        escapeHtml(it.description)+'</div>'+qty+rt+nc+'</td>'+cells+'</tr>';
+        escapeHtml(it.description)+'</div>'+qty+rt+nc+sc+mm+'</td>'+cells+'</tr>';
     });
     // totals rows with three-state badges
-    function totalRow(label, vals, cls, states){
+    function totalRow(label, vals, cls, states, opts){
+      opts=opts||{};
       var cells=vals.map(function(v,bi){
         var inner, badge="";
         var st=states?states[bi]:null;
@@ -474,18 +653,46 @@
           else if (st==="mismatch") badge='<span class="badge-verify badge-mismatch" title="Line items do NOT sum to this total — see alerts">✗</span>';
           else badge='<span class="badge-verify badge-unverified" title="Could not verify">?</span>';
         }
-        if (d.bidders[bi].excluded) badge+=' <span class="badge-excluded">excluded</span>';
-        return '<td class="p-3 border-t-2 border-slate-200 text-right '+(cls||"")+(bi===low&&cls==="leveled"?" totals-low":"")+'">'+inner+badge+'</td>';
+        if (isExcluded(bi)) badge+=' <span class="badge-excluded">excluded</span>';
+        var hl=(opts.highlightWinner&&bi===low)?" totals-low":"";
+        return '<td class="p-3 border-t-2 border-slate-200 text-right '+(cls||"")+hl+'">'+inner+badge+'</td>';
       }).join("");
       return '<tr class="totals-row bg-slate-50"><td class="sticky-col p-3 border-t-2 border-slate-200 font-bold text-[13px]">'+label+'</td>'+cells+'</tr>';
     }
     var states=d.bidders.map(function(b){return b.total_state||"unparseable";});
-    body+=totalRow("Submitted total", d.submitted_totals, "", states);
-    body+=totalRow("Leveled total", totals, "leveled", states);
+    body+=totalRow("Submitted total", d.submitted_totals, "", states, {});
+    if (!blocked){
+      // primary leveled total follows the user's tax-basis choice
+      var primaryLabel = d.has_tax_rows
+        ? (state.taxBasis==="included" ? "Leveled total (tax-included)" : "Leveled total (tax-excluded)")
+        : "Leveled total";
+      var primaryVals = totals.map(function(t,bi){
+        return t==null ? null : t + (state.taxBasis==="included" ? calcTax(bi) : 0);
+      });
+      body+=totalRow(primaryLabel+(state.provisional?' <span class="badge-provisional">PROVISIONAL</span>':""),
+                     primaryVals, "leveled", states, {highlightWinner: ranked||state.provisional});
+      if (d.has_tax_rows){
+        // secondary basis shown for transparency — margins are what protests are made of
+        var otherLabel = state.taxBasis==="included" ? "Leveled total (tax-excluded)" : "Leveled total (tax-included)";
+        var otherVals = totals.map(function(t,bi){
+          return t==null ? null : t + (state.taxBasis==="included" ? 0 : calcTax(bi));
+        });
+        body+=totalRow('<span class="text-slate-500 font-semibold">'+otherLabel+'</span>', otherVals, "", states, {});
+      }
+      // substitution-alternate gate: combined total ONLY after explicit confirmation
+      if (d.has_substitution_alternates){
+        if (state.awardBasis==="base_plus_alternate" && state.deductsConfirmed){
+          var combVals=[];
+          for (bi=0;bi<n;bi++) combVals.push(isExcluded(bi)?null:combinedAlternateTotal(bi));
+          body+=totalRow("Total incl. alternate <span class='badge-provisional'>deducts confirmed by you</span>",
+                         combVals, "leveled", states, {highlightWinner:false});
+        }
+      }
+    }
     // value-weighted ranking row
-    if (d.value_scores && d.value_scores.some(function(s){return s!=null;})){
+    if (!blocked && d.value_scores && d.value_scores.some(function(s){return s!=null;})){
       var vsCells=d.value_scores.map(function(s,bi){
-        if (s==null) return '<td class="p-3 border-t border-slate-200 text-right"><span class="mono text-slate-400">—</span></td>';
+        if (s==null||isExcluded(bi)) return '<td class="p-3 border-t border-slate-200 text-right"><span class="mono text-slate-400">—</span></td>';
         return '<td class="p-3 border-t border-slate-200 text-right"><span class="mono font-semibold">'+fmt(s)+'</span>'+
           '<div class="text-[10px] text-slate-400">value-weighted</div></td>';
       }).join("");
@@ -496,20 +703,79 @@
     $("project-title").textContent=d.project_name||"Leveled comparison";
     $("results-meta").textContent=d.bidders.length+" bidders · "+d.items.length+" scope items · click any cell to adjust";
 
-    // math alerts — three-state: show BOTH values on mismatch, never auto-fix
+    // ---- alerts & banners ----
     var alerts=[];
+    // badges row: math vs basis, side by side
+    alerts.push('<div class="flex flex-wrap gap-2 mb-1">'+mathBadgeHtml(d)+basisBadgeHtml(d)+
+      (d.extraction_quality==="poor"?'<span class="badge-basis badge-basis-suspect" title="Few cells parsed as numbers — treat every value as suspect">Extraction ⚠ poor</span>':"")+
+      '</div>');
+    if ((d.basis_notes||[]).length && d.basis_state!=="verified"){
+      alerts.push('<div class="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm">🔍 <strong>Basis:</strong> '+
+        escapeHtml(d.basis_notes.join(" "))+'</div>');
+    }
+    // ranking honesty banners
+    if (blocked){
+      var freqRows=d.items.map(function(it,ii){
+        if ((it.row_type||"amount")!=="amount"||it.deduct||it.alternate) return "";
+        var cur=state.frequencies[ii]!=null?state.frequencies[ii]:"";
+        return '<div class="flex items-center justify-between gap-3 py-1 border-b border-red-100 text-sm">'+
+          '<span class="truncate">'+escapeHtml(it.description)+'</span>'+
+          '<span class="flex items-center gap-1 whitespace-nowrap"><input type="number" min="1" step="1" '+
+          'data-freq="'+ii+'" value="'+cur+'" placeholder="—" class="freq-input"/>'+
+          '<span class="text-xs text-slate-500">visits/period</span></span></div>';
+      }).join("");
+      alerts.push('<div class="banner-blocked mb-2"><div class="font-bold text-red-900 text-base">⛔ Cannot rank these bids</div>'+
+        '<p class="text-sm text-red-800 mt-1">'+escapeHtml((d.basis_notes||["No quantity basis."]).join(" "))+
+        ' Ranking them would manufacture a winner from incomparable numbers — so we won\u2019t.</p>'+
+        '<div class="mt-3 text-sm text-red-900 font-semibold">Optional: supply the frequency basis for a provisional comparison</div>'+
+        '<div class="mt-1 max-h-56 overflow-y-auto pr-1">'+freqRows+'</div>'+
+        '<div class="mt-3 flex items-center gap-3"><button id="provisional-btn" class="btn-primary px-5 py-2 text-sm">Show provisional comparison</button>'+
+        '<span class="text-xs text-red-700">Enter visits-per-period for every row. Per-visit rates will be shown; the ranking stays labeled PROVISIONAL.</span></div></div>');
+    } else if (tooClose){
+      alerts.push('<div class="banner-tooclose mb-2"><div class="font-bold text-amber-900">⚠ Too close to call</div>'+
+        '<p class="text-sm text-amber-800 mt-1">'+escapeHtml(ranking.note||"")+'</p></div>');
+    } else if (state.provisional){
+      alerts.push('<div class="p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-900 text-sm mb-2">'+
+        '<strong>PROVISIONAL ranking</strong> — based on frequencies you supplied, not the source document. '+
+        'Confirm the schedule with the owner before awarding.</div>');
+    }
+    // substitution-alternate award-basis gate
+    if (d.has_substitution_alternates && !blocked){
+      var gateHtml='<div class="gate-panel text-sm mb-2"><strong>🔀 Substitution alternate — award basis</strong>'+
+        '<div class="mt-2 flex flex-wrap gap-4">'+
+        '<label><input type="radio" name="awardbasis" value="base"'+(state.awardBasis==="base"?" checked":"")+'/> Base bid only</label>'+
+        '<label><input type="radio" name="awardbasis" value="base_plus_alternate"'+(state.awardBasis==="base_plus_alternate"?" checked":"")+'/> Base + alternate (substitution)</label>'+
+        '</div>';
+      if (state.awardBasis==="base_plus_alternate"){
+        gateHtml+='<label class="mt-2 flex items-start gap-2 text-sm">'+
+          '<input type="checkbox" id="deduct-confirm" class="mt-1"'+(state.deductsConfirmed?" checked":"")+' /> '+
+          '<span>I confirm each bidder\u2019s deduct rows map to the base items they replace. '+
+          '<strong>Without this, the combined total overstates every bid by six figures.</strong></span></label>';
+      } else {
+        gateHtml+='<div class="mt-2 text-xs text-slate-600">Combined totals are withheld until you confirm the deduct mapping.</div>';
+      }
+      gateHtml+='</div>';
+      alerts.push(gateHtml);
+    }
+    // math alerts — three-state: show BOTH values on mismatch, never auto-fix
     d.bidders.forEach(function(b,bi){
       var sub=d.submitted_totals[bi], calc=totals[bi];
       if (b.total_state==="mismatch" && sub!=null && calc!=null){
         alerts.push('<div class="p-3 rounded-lg bg-red-50 text-red-900 text-sm">✗ <strong>'+
           escapeHtml(state.names[bi])+'</strong>: line items sum to '+fmt(calc)+
+          (d.has_tax_rows?' + '+fmt(calcTax(bi))+' tax':"")+
           ' but the bid tab shows '+fmt(sub)+
           '. <strong>Both values shown — you decide which is correct.</strong> The table uses the calculated sum.</div>');
       } else if (b.total_state==="unparseable"){
         alerts.push('<div class="p-3 rounded-lg bg-slate-100 text-slate-700 text-sm">? <strong>'+
           escapeHtml(state.names[bi])+'</strong>: not enough data to verify the total. Treat all numbers as unverified.</div>');
       }
-      if (b.excluded){
+      if (isExcluded(bi) && !b.excluded){
+        alerts.push('<div class="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm">⚠ <strong>'+
+          escapeHtml(state.names[bi])+'</strong> marked '+
+          (state.userStatus[bi]==="nonresponsive"?"non-responsive":"did not bid")+
+          ' — excluded from low-bidder calculation and all statistics.</div>');
+      } else if (b.excluded){
         alerts.push('<div class="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm">⚠ <strong>'+
           escapeHtml(state.names[bi])+'</strong> has no priced line items — excluded from low-bidder calculation and all statistics.</div>');
       }
@@ -529,12 +795,61 @@
         nc+' rows</strong> flagged "not directly comparable" — the scope may differ between bidders '+
         'despite similar descriptions. Verify before comparing.</div>');
     }
+    // ambiguous cells alert
+    var nAmb=0;
+    d.items.forEach(function(it,ii){ it.values.forEach(function(v,bi){
+      if (v.status==="ambiguous" && state.choices[bi+":"+ii]==null) nAmb++;
+    }); });
+    if (nAmb>0){
+      alerts.push('<div class="p-3 rounded-lg bg-red-50 text-red-900 text-sm">⚠ <strong>'+
+        nAmb+' cells</strong> contain stacked as-bid AND corrected values. '+
+        'Click each red-bordered cell and pick the authoritative value — totals exclude undecided cells.</div>');
+    }
     $("math-alerts").innerHTML=alerts.join("");
+    // wire up gate + provisional controls (they live inside alerts html)
+    Array.prototype.forEach.call($("math-alerts").querySelectorAll('input[name="awardbasis"]'), function(r){
+      r.addEventListener("change", function(){
+        state.awardBasis=r.value;
+        if (r.value==="base") state.deductsConfirmed=false;
+        renderTable();
+      });
+    });
+    var dc=$("deduct-confirm");
+    if (dc) dc.addEventListener("change", function(){ state.deductsConfirmed=dc.checked; renderTable(); });
+    Array.prototype.forEach.call($("math-alerts").querySelectorAll("[data-freq]"), function(inp){
+      inp.addEventListener("change", function(){
+        var ii=Number(inp.dataset.freq), v=Number(inp.value);
+        if (isFinite(v)&&v>0) state.frequencies[ii]=v; else delete state.frequencies[ii];
+      });
+    });
+    var pb=$("provisional-btn");
+    if (pb) pb.addEventListener("click", function(){
+      var missing=[];
+      d.items.forEach(function(it,ii){
+        if ((it.row_type||"amount")!=="amount"||it.deduct||it.alternate) return;
+        var hasPriced=it.values.some(function(v,bi){return !isExcluded(bi)&&(v.status==="priced"||v.status==="included");});
+        if (hasPriced && !(state.frequencies[ii]>0)) missing.push(it.description);
+      });
+      if (missing.length){
+        alert("Still need visits-per-period for "+missing.length+" row(s):\n• "+missing.slice(0,8).join("\n• ")+
+          (missing.length>8?"\n…":""));
+        return;
+      }
+      state.provisional=true;
+      renderTable();
+    });
   }
 
   /* ---------- adjust modal ---------- */
   var modal=$("adjust-modal");
   document.addEventListener("click", function(e){
+    // ambiguous-cell pick: user chooses the authoritative value
+    var amb=e.target.closest("[data-amb]");
+    if (amb){
+      state.choices[amb.dataset.amb]=Number(amb.dataset.ambVal);
+      renderTable();
+      return;
+    }
     var cell=e.target.closest(".cell-btn[data-bi]");
     if (cell && $("results-section").classList.contains("hidden")===false && cell.closest("#results-body")){
       editCell={bi:Number(cell.dataset.bi), ii:Number(cell.dataset.ii)};
@@ -600,7 +915,9 @@
   });
 
   $("start-over").addEventListener("click", function(){
-    files=[]; renderFiles(); state={data:null,names:[],adjustments:{}};
+    files=[]; renderFiles();
+    state={data:null,names:[],adjustments:{},choices:{},frequencies:{},userStatus:{},
+           taxBasis:"included",taxRate:0,awardBasis:"base",deductsConfirmed:false,provisional:false};
     hide("results-section"); hide("confirm-section"); show("upload-section");
     window.scrollTo({top:0,behavior:"smooth"});
   });
