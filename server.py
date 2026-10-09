@@ -301,6 +301,253 @@ def is_tax_row(row):
 
 # ---------------------------------------------------------------- PDF (multi-bidder tab mode)
 
+def _pdf_full_text(path):
+    """Extract all text from a PDF, page by page."""
+    import pdfplumber
+    pages = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            pages.append(page.extract_text() or "")
+    return pages
+
+
+def detect_verdantas_format(pages):
+    """Detect Verdantas bid-platform summary: LIST OF BIDDERS + LIST OF TOTALS pages."""
+    full = "\n".join(pages).upper()
+    has_bidders = "LIST OF BIDDERS" in full
+    has_totals = "LIST OF TOTALS" in full
+    has_tab_summary = "BID TABULATION SUMMARY" in full
+    return has_bidders and has_totals and has_tab_summary
+
+
+def extract_verdantas_summary(path, filename):
+    """Parse Verdantas bid tabulation summary: bidder list + totals pages.
+
+    Returns (data, warnings) in the same shape as extract_pdf_tab, or (None, [errs]).
+    """
+    import re
+    pages = _pdf_full_text(path)
+    if not detect_verdantas_format(pages):
+        return None, ["not a Verdantas summary format"]
+
+    warnings = []
+    # Find the LIST OF BIDDERS page and LIST OF TOTALS page
+    bidder_names = []  # list of (number, name)
+    totals = {}  # number -> (name, amount)
+
+    for page_text in pages:
+        upper = page_text.upper()
+        if "LIST OF BIDDERS" in upper:
+            # Pattern: number followed by company name, then address lines
+            # e.g. "1 Perk Company Inc.\n3740 Carnegie Avenue..."
+            lines = page_text.split("\n")
+            i = 0
+            while i < len(lines):
+                m = re.match(r"^(\d+)\s+(.+?)\s*$", lines[i].strip())
+                if m:
+                    num = int(m.group(1))
+                    name = m.group(2).strip()
+                    # Company name is on this line; address follows on next lines
+                    # Clean up: remove trailing stuff, keep the name
+                    if name and len(name) > 2:
+                        bidder_names.append((num, name))
+                i += 1
+        elif "LIST OF TOTALS" in upper:
+            # Pattern: "1. Perk Company Inc. $557,644.50"
+            # May have informal total: "3. A & J Cement $1,114,341.30 $1,114,336.30"
+            # We take the FIRST (calculated) total.
+            for line in page_text.split("\n"):
+                m = re.match(r"^(\d+)\.\s+(.+?)\s+\$([\d,]+\.\d{2})(?:\s+\$[\d,]+\.\d{2})?\s*$", line.strip())
+                if m:
+                    num = int(m.group(1))
+                    name = m.group(2).strip()
+                    # Strip any trailing dollar amount that leaked into the name
+                    name = re.sub(r"\s+\$[\d,]+\.\d{2}\s*$", "", name).strip()
+                    val, status = parse_money(m.group(3))
+                    if val is not None and status == "priced":
+                        totals[num] = (name, val)
+
+    if not bidder_names:
+        return None, ["Verdantas format detected but no bidders found"]
+    if not totals:
+        return None, ["Verdantas format detected but no totals found"]
+
+    # Build bidder data in the standard format
+    bidders = []
+    bidder_name_list = []
+    for num, name in sorted(bidder_names):
+        if num in totals:
+            tname, amount = totals[num]
+            # Use the totals-page name (more likely correct)
+            final_name = tname if tname else name
+            bidder_name_list.append(final_name)
+            bidders.append({
+                "name": final_name,
+                "total": amount,
+                "total_state": "verified",
+                "items": [{
+                    "description": "Total Bid",
+                    "amount": amount,
+                    "confidence": "high",
+                }],
+                "confidence": "high",
+            })
+        else:
+            warnings.append(f"Bidder {name} has no total")
+
+    if len(bidders) < 2:
+        return None, ["Verdantas: fewer than 2 bidders with totals"]
+
+    # Build the standard tab output format
+    items = [{
+        "description": "Total Bid",
+        "bids": {b["name"]: {"amount": b["total"], "confidence": "high"} for b in bidders},
+        "comparable": True,
+    }]
+
+    return {
+        "bidders": bidder_name_list,
+        "bidder_data": {b["name"]: b for b in bidders},
+        "items": items,
+        "extraction_quality": "good",
+        "format": "verdantas_summary",
+        "warnings": warnings,
+    }, warnings
+
+
+def detect_board_packet(pages):
+    """Detect school board / council packet: ACTION REPORT, Board of Education, etc."""
+    full = "\n".join(pages[:3]).upper()  # check first 3 pages
+    indicators = [
+        "ACTION REPORT",
+        "BOARD OF EDUCATION",
+        "CITY COUNCIL",
+        "BOARD MEETING",
+        "RECOMMENDATION",
+        "AWARD A CONTRACT",
+    ]
+    score = sum(1 for ind in indicators if ind in full)
+    # Also check for bid language
+    has_bid_lang = any(
+        phrase in full
+        for phrase in ["SUBMITTED BIDS", "LOW BIDDER", "BID OPENING", "PUBLICLY BID"]
+    )
+    return score >= 2 and has_bid_lang
+
+
+def extract_board_packet(path, filename):
+    """Extract bid info from board/council packet narrative.
+
+    These PDFs bury bid results in prose. We extract what's stated:
+    bidder count, low bidder name/amount. Returns needs_review (never ranked).
+    """
+    import re
+    pages = _pdf_full_text(path)
+    if not detect_board_packet(pages):
+        return None, ["not a board packet format"]
+
+    full = "\n".join(pages)
+    upper = full.upper()
+    warnings = []
+
+    # Extract number of bidders: "Nine contractors submitted bids" / "9 bidders"
+    bidder_count = None
+    m = re.search(r"(\d+)\s+(contractors?|bidders?)\s+submitted\s+bids?", upper)
+    if m:
+        bidder_count = int(m.group(1))
+    else:
+        # Try word numbers
+        word_nums = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5,
+                     "SIX": 6, "SEVEN": 7, "EIGHT": 8, "NINE": 9, "TEN": 10,
+                     "ELEVEN": 11, "TWELVE": 12}
+        m = re.search(r"\b(ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|ELEVEN|TWELVE)\b\s+(contractors?|bidders?)\s+submitted", upper)
+        if m:
+            bidder_count = word_nums[m.group(1)]
+
+    # Extract low bidder: "The low bidder is X ... in the amount of $Y"
+    # or "low bidder is X in the amount of Base Bid $Y"
+    low_bidder = None
+    low_amount = None
+    m = re.search(
+        r"low\s+bidder\s+is\s+(.+?)\s+(?:from\s+.+?\s+)?in\s+the\s+amount\s+of\s+(?:base\s+bid\s+)?\$([\d,]+)",
+        full, re.IGNORECASE
+    )
+    if m:
+        low_bidder = m.group(1).strip().rstrip(",")
+        val, status = parse_money(m.group(2))
+        low_amount = val if status == "priced" else None
+
+    # Also try: "Award a contract to X for ... for $Y"
+    if not low_bidder:
+        m = re.search(
+            r"award\s+a\s+contract\s+to\s+(.+?)\s+for\s+.+?\s+for\s+\$([\d,]+)",
+            full, re.IGNORECASE
+        )
+        if m:
+            low_bidder = m.group(1).strip().rstrip(",")
+            val, status = parse_money(m.group(2))
+            low_amount = val if status == "priced" else None
+
+    # Also try: "lowest responsible bid was submitted by X, at $Y"
+    if not low_bidder:
+        m = re.search(
+            r"lowest\s+(?:responsible\s+)?bid\s+was\s+submitted\s+by\s+(.+?)\s*,?\s+at\s+\$([\d,]+\.?\d*)",
+            full, re.IGNORECASE
+        )
+        if m:
+            low_bidder = m.group(1).strip().rstrip(",")
+            val, status = parse_money(m.group(2))
+            low_amount = val if status == "priced" else None
+
+    # Also try: "low bidder for the project is X, from Y" + separate "low bid is $Z"
+    if not low_bidder:
+        m = re.search(
+            r"low\s+bidder\s+(?:for\s+the\s+project\s+)?is\s+(.+?)\s*,?\s+from\s+",
+            full, re.IGNORECASE
+        )
+        if m:
+            low_bidder = m.group(1).strip().rstrip(",")
+            # Find the low bid amount in nearby text
+            m2 = re.search(
+                r"low\s+bid\s+is\s+(?:approximately\s+)?\$([\d,]+\.?\d*)",
+                full, re.IGNORECASE
+            )
+            if m2:
+                val, status = parse_money(m2.group(1))
+                low_amount = val if status == "priced" else None
+
+    if not low_bidder or low_amount is None:
+        return None, ["board packet detected but could not extract low bidder"]
+
+    # Build a single-bidder informational result (never ranked)
+    info = {
+        "bidders": [low_bidder],
+        "bidder_data": {
+            low_bidder: {
+                "name": low_bidder,
+                "total": low_amount,
+                "total_state": "unverified",
+                "items": [{
+                    "description": "Low Bid (from narrative)",
+                    "amount": low_amount,
+                    "confidence": "low",
+                }],
+                "confidence": "low",
+            }
+        },
+        "items": [],
+        "extraction_quality": "poor",
+        "format": "board_packet",
+        "bidder_count_stated": bidder_count,
+        "warnings": [
+            f"Board packet narrative only: {bidder_count or 'unknown number of'} bidders, "
+            f"low bidder {low_bidder} at ${low_amount:,.2f}. "
+            "Full tab not in document — verify before awarding.",
+        ] + warnings,
+    }
+    return info, warnings
+
+
 def _pdf_tables_with_boxes(path):
     import pdfplumber
     out = []
@@ -887,13 +1134,28 @@ def upload():
 
         # decide mode: single PDF that parses as a multi-bidder tab?
         if len(saved) == 1 and saved[0][2] == ".pdf":
-            data, errs = extract_pdf_tab(saved[0][0], saved[0][1])
+            path, filename = saved[0][0], saved[0][1]
+            # Format-specific parsers first (cheaper and more precise than table extraction)
+            pages = _pdf_full_text(path)
+            data, errs = None, []
+            if detect_verdantas_format(pages):
+                data, errs = extract_verdantas_summary(path, filename)
+            elif detect_board_packet(pages):
+                data, errs = extract_board_packet(path, filename)
+            if data and len(data.get("bidders", [])) >= 2 and data.get("items"):
+                return jsonify(data)
+            if data and data.get("format") == "board_packet":
+                # Board packet: informational only, never ranked
+                return jsonify(data)
+            # fall through to standard table extraction
+            data, errs2 = extract_pdf_tab(path, filename)
+            errs = errs + errs2
             if data and len(data["bidders"]) >= 2 and data["items"]:
                 return jsonify(data)
             # fall through to single-bidder mode
-            b, errs2 = extract_pdf_single(saved[0][0], saved[0][1])
+            b, errs3 = extract_pdf_single(path, filename)
             bidders = [b] if b else []
-            warnings = errs + errs2
+            warnings = errs + errs3
         else:
             bidders, warnings = [], []
             for path, filename, ext in saved:
