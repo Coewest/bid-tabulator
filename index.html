@@ -69,6 +69,16 @@
 </head>
 <body class="bg-slate-50 text-slate-900">
 
+<!-- ============ TOP NAV ============ -->
+<nav class="text-white" style="background:var(--navy-deep)">
+  <div class="max-w-6xl mx-auto px-5 py-3 flex items-center justify-between">
+    <a href="/" class="font-bold text-lg">Bid Tabulator</a>
+    <div id="nav-auth" class="flex items-center gap-3 text-sm">
+      <span class="text-slate-400">Loading…</span>
+    </div>
+  </div>
+</nav>
+
 <!-- ============ HERO ============ -->
 <header class="text-white" style="background:var(--navy-deep)">
   <div class="max-w-6xl mx-auto px-5 py-12 md:py-16">
@@ -213,6 +223,55 @@
   <div class="w-10 h-1" style="background:var(--orange)"></div>
 </footer>
 
+<!-- ============ DASHBOARD ============ -->
+<section id="dashboard-section" class="hidden bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8 mb-8">
+  <div class="flex items-center justify-between">
+    <h2 class="text-2xl font-bold" style="color:var(--navy)">Your tabulations</h2>
+    <button id="new-tab-btn" class="btn-primary px-5 py-2.5 text-sm">+ New tabulation</button>
+  </div>
+  <div id="tab-list" class="mt-5 space-y-2"></div>
+</section>
+
+<!-- ============ AUTH MODAL ============ -->
+<div id="auth-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="modal-backdrop absolute inset-0" data-close-auth></div>
+  <div class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-sm">
+    <h3 id="auth-title" class="font-bold text-xl" style="color:var(--navy)">Create your account</h3>
+    <p id="auth-sub" class="text-sm text-slate-500 mt-1">Save this tabulation and pick up where you left off.</p>
+    <label class="block text-xs font-semibold text-slate-500 mt-4 mb-1">EMAIL</label>
+    <input id="auth-email" type="email" class="w-full border border-slate-300 rounded-lg px-3 py-2.5" placeholder="you@company.com" />
+    <label class="block text-xs font-semibold text-slate-500 mt-3 mb-1">PASSWORD</label>
+    <input id="auth-password" type="password" class="w-full border border-slate-300 rounded-lg px-3 py-2.5" placeholder="8+ characters" />
+    <div id="auth-error" class="hidden mt-3 p-3 rounded-lg bg-red-50 text-red-800 text-sm"></div>
+    <button id="auth-submit" class="btn-primary w-full py-3 mt-4">Create account</button>
+    <p class="text-sm text-slate-500 mt-3 text-center">
+      <span id="auth-switch-text">Already have an account?</span>
+      <button id="auth-switch" class="underline font-semibold" style="color:var(--orange-dark)">Log in</button>
+    </p>
+  </div>
+</div>
+
+<!-- ============ PAYWALL MODAL ============ -->
+<div id="paywall-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
+  <div class="modal-backdrop absolute inset-0" data-close-paywall></div>
+  <div class="relative bg-white rounded-xl shadow-xl p-8 w-full max-w-md text-center">
+    <h3 class="font-bold text-2xl" style="color:var(--navy)">You've used your free tabulation</h3>
+    <p class="text-slate-500 mt-2">Subscribe for unlimited bid tabulations, saved history, and CSV exports.</p>
+    <div class="font-mono font-semibold mt-4" style="color:var(--navy);font-size:2.2rem">$49<span class="text-base font-sans text-slate-500">/month</span></div>
+    <div id="paywall-error" class="hidden mt-3 p-3 rounded-lg bg-red-50 text-red-800 text-sm text-left"></div>
+    <button id="paywall-subscribe" class="btn-primary w-full py-3.5 mt-5 text-lg">Subscribe — $49/mo</button>
+    <button data-close-paywall class="mt-3 text-sm text-slate-500 underline">Not now</button>
+  </div>
+</div>
+
+<!-- ============ SAVE PROMPT (after anonymous free tabulation) ============ -->
+<div id="save-prompt" class="hidden mb-5 bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-lg">
+  <p class="text-sm text-blue-900"><strong>Want to keep this?</strong>
+    Create a free account and this tabulation will be saved to your dashboard.
+    <button id="save-prompt-btn" class="btn-primary px-4 py-1.5 text-sm ml-2">Create free account</button>
+  </p>
+</div>
+
 <!-- ============ ADJUST MODAL ============ -->
 <div id="adjust-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
   <div class="modal-backdrop absolute inset-0" data-close></div>
@@ -304,9 +363,21 @@
     var fd=new FormData();
     files.forEach(function(f){ fd.append("files", f); });
     fetch("/api/upload",{method:"POST",body:fd})
-      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, body:j}; }); })
       .then(function(res){
-        if (!res.ok) throw new Error(res.body.error || "Extraction failed");
+        if (!res.ok) {
+          if (res.status === 402 && res.body.error === "free_limit"){
+            hide("processing-section"); show("upload-section");
+            openAuth("signup");
+            return;
+          }
+          if (res.status === 402 && res.body.error === "subscription_required"){
+            hide("processing-section"); show("upload-section");
+            openPaywall();
+            return;
+          }
+          throw new Error(res.body.error || "Extraction failed");
+        }
         state.data=res.body;
         state.names=res.body.bidders.map(function(b){return b.name;});
         state.adjustments={}; state.choices={}; state.frequencies={};
@@ -317,6 +388,7 @@
         state.taxBasis = tb.length && tb.every(function(x){return x==="tax_excluded";})
           ? "excluded" : "included";
         state.taxRate = res.body.tax_rate_detected || 0;
+        afterUploadSuccess(res.body);
         renderConfirm();
         show("confirm-section"); hide("processing-section");
       })
@@ -922,11 +994,186 @@
     files=[]; renderFiles();
     state={data:null,names:[],adjustments:{},choices:{},frequencies:{},userStatus:{},
            taxBasis:"included",taxRate:0,awardBasis:"base",deductsConfirmed:false,provisional:false};
-    hide("results-section"); hide("confirm-section"); show("upload-section");
+    pendingTabId=null;
+    hide("save-prompt"); hide("results-section"); hide("confirm-section"); show("upload-section");
     window.scrollTo({top:0,behavior:"smooth"});
   });
 
   renderFiles();
+
+  /* ================= AUTH + BILLING ================= */
+  var authUser = null;         // {id,email,subscription,tabulations,free_remaining}
+  var pendingTabId = null;     // anonymous tabulation id to claim on signup
+  var authMode = "signup";     // or "login"
+
+  function api(path, opts){
+    opts = opts || {};
+    opts.headers = Object.assign({"Content-Type":"application/json"}, opts.headers||{});
+    return fetch(path, opts).then(function(r){
+      return r.json().then(function(j){ return {ok:r.ok, status:r.status, body:j}; });
+    });
+  }
+
+  function renderNav(){
+    var el = $("nav-auth");
+    if (!authUser){
+      el.innerHTML = '<button id="nav-login" class="hover:underline">Log in</button>'+
+        '<button id="nav-signup" class="btn-primary px-4 py-1.5">Sign up free</button>';
+      $("nav-login").addEventListener("click", function(){ openAuth("login"); });
+      $("nav-signup").addEventListener("click", function(){ openAuth("signup"); });
+    } else {
+      var sub = authUser.subscription === "active"
+        ? '<span class="text-green-400 font-semibold">● Subscribed</span>'
+        : '<button id="nav-subscribe" class="underline" style="color:#f58b53">Subscribe $49/mo</button>';
+      el.innerHTML = '<button id="nav-dash" class="hover:underline">'+escapeHtml(authUser.email)+'</button>'+
+        sub +
+        '<button id="nav-logout" class="text-slate-400 hover:underline">Log out</button>';
+      $("nav-dash").addEventListener("click", showDashboard);
+      $("nav-logout").addEventListener("click", function(){
+        api("/api/logout",{method:"POST"}).then(function(){ location.reload(); });
+      });
+      var ns = $("nav-subscribe");
+      if (ns) ns.addEventListener("click", openPaywall);
+    }
+  }
+
+  function refreshMe(){
+    return api("/api/me").then(function(res){
+      authUser = res.body.user || null;
+      renderNav();
+      return authUser;
+    });
+  }
+
+  function openAuth(mode, claimId){
+    authMode = mode || "signup";
+    pendingTabId = claimId || pendingTabId;
+    $("auth-title").textContent = authMode==="signup" ? "Create your account" : "Welcome back";
+    $("auth-sub").textContent = authMode==="signup"
+      ? "Save this tabulation and pick up where you left off."
+      : "Log in to see your saved tabulations.";
+    $("auth-submit").textContent = authMode==="signup" ? "Create account" : "Log in";
+    $("auth-switch-text").textContent = authMode==="signup" ? "Already have an account?" : "New here?";
+    $("auth-switch").textContent = authMode==="signup" ? "Log in" : "Sign up";
+    $("auth-error").classList.add("hidden");
+    $("auth-modal").classList.remove("hidden");
+  }
+  function closeAuth(){ $("auth-modal").classList.add("hidden"); }
+
+  $("auth-switch").addEventListener("click", function(){
+    openAuth(authMode==="signup" ? "login" : "signup");
+  });
+  document.querySelectorAll("[data-close-auth]").forEach(function(b){
+    b.addEventListener("click", closeAuth);
+  });
+  $("auth-submit").addEventListener("click", function(){
+    var email = $("auth-email").value.trim(), pw = $("auth-password").value;
+    $("auth-error").classList.add("hidden");
+    var payload = {email:email, password:pw};
+    if (authMode==="signup" && pendingTabId) payload.claim_tabulations = [pendingTabId];
+    api(authMode==="signup" ? "/api/signup" : "/api/login",
+        {method:"POST", body:JSON.stringify(payload)})
+      .then(function(res){
+        if (!res.ok) throw new Error(res.body.error || "Something went wrong");
+        closeAuth(); pendingTabId = null;
+        return refreshMe();
+      })
+      .then(function(){ showDashboard(); })
+      .catch(function(err){
+        $("auth-error").textContent = err.message;
+        $("auth-error").classList.remove("hidden");
+      });
+  });
+
+  function openPaywall(){
+    $("paywall-error").classList.add("hidden");
+    $("paywall-modal").classList.remove("hidden");
+  }
+  document.querySelectorAll("[data-close-paywall]").forEach(function(b){
+    b.addEventListener("click", function(){ $("paywall-modal").classList.add("hidden"); });
+  });
+  $("paywall-subscribe").addEventListener("click", function(){
+    $("paywall-error").classList.add("hidden");
+    api("/api/stripe/checkout",{method:"POST"}).then(function(res){
+      if (!res.ok) throw new Error(res.body.error || "Checkout failed");
+      window.location.href = res.body.url;
+    }).catch(function(err){
+      $("paywall-error").textContent = err.message;
+      $("paywall-error").classList.remove("hidden");
+    });
+  });
+
+  function showDashboard(){
+    api("/api/tabulations").then(function(res){
+      if (!res.ok){ openAuth("login"); return; }
+      var tabs = res.body.tabulations || [];
+      $("tab-list").innerHTML = tabs.length ? tabs.map(function(t){
+        var d = new Date(t.created_at*1000).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+        return '<button data-tab="'+t.id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
+          '<span class="font-semibold">'+escapeHtml(t.project_name)+'</span>'+
+          '<span class="text-sm text-slate-400">'+d+' →</span></button>';
+      }).join("") : '<p class="text-slate-500">No tabulations yet. Upload a bid package to get started.</p>';
+      $("tab-list").querySelectorAll("[data-tab]").forEach(function(b){
+        b.addEventListener("click", function(){ loadTabulation(Number(b.dataset.tab)); });
+      });
+      hide("upload-section"); hide("results-section"); hide("confirm-section"); hide("processing-section");
+      show("dashboard-section");
+      window.scrollTo({top:0, behavior:"smooth"});
+    });
+  }
+  $("new-tab-btn").addEventListener("click", function(){
+    hide("dashboard-section"); show("upload-section");
+    window.scrollTo({top:0, behavior:"smooth"});
+  });
+
+  function loadTabulation(id){
+    api("/api/tabulations/"+id).then(function(res){
+      if (!res.ok) throw new Error(res.body.error || "Could not load");
+      var d = res.body.data;
+      state.data = d;
+      state.names = d.bidders.map(function(b){return b.name;});
+      state.adjustments={}; state.choices={}; state.frequencies={};
+      state.userStatus={}; state.provisional=false; state.deductsConfirmed=false;
+      state.awardBasis="base";
+      var tb=(d.tax_basis_detected||[]).filter(Boolean);
+      state.taxBasis = tb.length && tb.every(function(x){return x==="tax_excluded";}) ? "excluded" : "included";
+      state.taxRate = d.tax_rate_detected || 0;
+      hide("dashboard-section"); hide("upload-section");
+      renderTable();
+      show("results-section");
+      window.scrollTo({top:0, behavior:"smooth"});
+    }).catch(function(err){ alert(err.message); });
+  }
+
+  // Intercept upload 402s for gating
+  var _origFetch = window.fetch;
+
+  // After successful anonymous upload, show save prompt + stash tab id
+  function afterUploadSuccess(body){
+    if (body.tabulation_id && !body.saved){
+      pendingTabId = body.tabulation_id;
+      // move save prompt above results
+      var sp = $("save-prompt");
+      $("results-section").parentNode.insertBefore(sp, $("results-section"));
+      sp.classList.remove("hidden");
+      $("save-prompt-btn").onclick = function(){ openAuth("signup", pendingTabId); };
+    }
+  }
+
+  // billing return URLs
+  (function(){
+    var q = new URLSearchParams(location.search);
+    if (q.get("billing")==="success"){
+      history.replaceState(null,"",location.pathname);
+      refreshMe().then(function(){
+        alert("Subscription active — unlimited tabulations unlocked.");
+      });
+    } else if (q.get("billing")==="cancelled"){
+      history.replaceState(null,"",location.pathname);
+    }
+  })();
+
+  refreshMe();
 })();
 </script>
 </body>
