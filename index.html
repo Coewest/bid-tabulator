@@ -23,6 +23,17 @@
   .cell-missing { color:#9aa5b1; }
   .cell-included { color:#26734d; font-style:italic; }
   .cell-adjusted { box-shadow:inset 0 0 0 2px var(--orange); }
+  .cell-lowconf { box-shadow:inset 0 0 0 2px #e8a13c; }
+  .badge-verify { font-size:10px; font-weight:700; padding:1px 5px; border-radius:4px; margin-left:4px; }
+  .badge-verified { background:#e5f4eb; color:#26734d; }
+  .badge-unverified { background:#f1f5f9; color:#64748b; }
+  .badge-mismatch { background:#fef2f2; color:#b91c1c; }
+  .badge-noncomp { background:#fef3e2; color:#92400e; font-size:11px; font-weight:700;
+    padding:2px 8px; border-radius:4px; display:inline-block; margin-top:4px; }
+  .badge-excluded { background:#f1f5f9; color:#64748b; font-size:11px; font-weight:700;
+    padding:2px 8px; border-radius:4px; }
+  .badge-rowtype { font-size:10px; color:#64748b; font-weight:600; text-transform:uppercase;
+    letter-spacing:.05em; }
   .totals-low { background:#e5f4eb !important; }
   th.sticky-col, td.sticky-col { position:sticky; left:0; background:#fff; z-index:1;
     box-shadow:1px 0 0 #e5e7eb; }
@@ -291,25 +302,62 @@
     var d=state.data;
     var cards=d.bidders.map(function(b,i){
       var calc=d.items.reduce(function(s,it){
+        if ((it.row_type||"amount")!=="amount") return s;  // never sum non-amount rows
         var v=it.values[i];
         return s+((v.status==="priced"||v.status==="included")&&v.amount!=null?v.amount:0);
       },0);
       var conf=d.bidder_confidence==="high"
         ? '<span class="text-xs font-semibold text-green-700 bg-green-50 px-2 py-0.5 rounded">high confidence</span>'
         : '<span class="text-xs font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded">please verify</span>';
+      var ex=b.excluded
+        ? '<div class="mt-2"><span class="badge-excluded">⚠ will be excluded from statistics — no priced items</span></div>' : "";
+      var ts=b.total_state==="verified"
+        ? '<span class="badge-verify badge-verified">total ✓</span>'
+        : b.total_state==="mismatch"
+        ? '<span class="badge-verify badge-mismatch">total ✗ mismatch</span>'
+        : '<span class="badge-verify badge-unverified">total ?</span>';
       return '<div class="border border-slate-200 rounded-lg p-4">'+
         '<div class="flex items-center justify-between mb-2"><span class="text-xs font-bold text-slate-400">BIDDER '+(i+1)+'</span>'+conf+'</div>'+
         '<input type="text" data-bidder="'+i+'" value="'+escapeHtml(state.names[i])+'" '+
         ' class="w-full border border-slate-300 rounded-lg px-3 py-2 font-semibold" />'+
         (b.location?'<div class="text-xs text-slate-400 mt-1">'+escapeHtml(b.location)+'</div>':"")+
         '<div class="text-xs text-slate-500 mt-2">File: '+escapeHtml(b.file||"")+
-        ' · <span class="mono">'+fmt(calc)+'</span> in line items</div></div>';
+        ' · <span class="mono">'+fmt(calc)+'</span> in line items '+ts+'</div>'+ex+'</div>';
     }).join("");
     $("bidder-cards").innerHTML=cards;
+    // low-confidence cell summary for review gate
+    var lowConfCells=[];
+    d.items.forEach(function(it,ii){
+      it.values.forEach(function(v,bi){
+        if (v.confidence==="low"){
+          lowConfCells.push({ii:ii, bi:bi, desc:it.description,
+            verbatim:v.verbatim||v.raw||"(empty)"});
+        }
+      });
+    });
     var w=$("confirm-warnings");
-    w.innerHTML=(d.warnings||[]).map(function(x){
+    var html=(d.warnings||[]).map(function(x){
       return '<div class="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm mb-2">⚠ '+escapeHtml(x)+'</div>';
     }).join("");
+    if (lowConfCells.length){
+      html+='<div class="p-4 rounded-lg bg-amber-50 border-2 border-amber-300 text-amber-900 text-sm mb-2">'+
+        '<strong>🔍 Review gate: '+lowConfCells.length+' low-confidence extractions need your call.</strong>'+
+        '<div class="mt-2 max-h-40 overflow-y-auto text-xs space-y-1">'+
+        lowConfCells.slice(0,20).map(function(c){
+          return '<div>• <strong>'+escapeHtml(state.names[c.bi])+'</strong> / '+escapeHtml(c.desc)+
+            ': source says "'+escapeHtml(c.verbatim)+'"</div>';
+        }).join("")+
+        (lowConfCells.length>20?'<div>…and '+(lowConfCells.length-20)+' more</div>':"")+
+        '</div><div class="mt-2">These are highlighted with an amber border in the table. Correct bidder names above if needed, then proceed — you can adjust any cell after.</div></div>';
+    }
+    // non-comparable rows in review gate
+    var nc=d.items.filter(function(it){return it.comparable===false;});
+    if (nc.length){
+      html+='<div class="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm mb-2">⚠ <strong>'+
+        nc.length+' rows</strong> flagged "not directly comparable" (qualifier words detected: only/excluding/not including/etc.). '+
+        'They will show a prominent warning in the table.</div>';
+    }
+    w.innerHTML=html;
   }
   $("bidder-cards").addEventListener("input", function(e){
     var inp=e.target.closest("[data-bidder]"); if(!inp) return;
@@ -329,16 +377,21 @@
     return s.length%2? s[m] : (s[m-1]+s[m])/2; }
 
   function isOutlier(ii, bi){
-    var vals=state.data.items[ii].values
-      .map(function(v){return v.amount;})
+    var d=state.data;
+    if (d.bidders[bi]&&d.bidders[bi].excluded) return false;
+    // two-sided: flag both high AND low outliers
+    var vals=d.items[ii].values
+      .map(function(v,idx){ return (d.bidders[idx]&&d.bidders[idx].excluded)?null:v.amount; })
       .filter(function(a){return a!=null && a>0;});
     if (vals.length<3) return false;
-    var med=median(vals), amt=state.data.items[ii].values[bi].amount;
+    var med=median(vals), amt=d.items[ii].values[bi].amount;
     if (amt==null||amt<=0) return false;
     return amt>med*2 || amt<med*0.5;
   }
   function calcTotal(bi){
+    // NEVER sum rate/percent/fee_component rows — only amount rows
     var t=state.data.items.reduce(function(s,it){
+      if ((it.row_type||"amount")!=="amount") return s;
       var v=it.values[bi];
       return s+((v.status==="priced"||v.status==="included")&&v.amount!=null?v.amount:0);
     },0);
@@ -349,33 +402,54 @@
   }
   function adjFor(bi,ii){ return state.adjustments[bi+":"+ii]||0; }
 
+  function verifyBadge(v){
+    if (!v || v.verify==="unverified") return '<span class="badge-verify badge-unverified" title="Could not verify this number">?</span>';
+    if (v.verify==="verified") return '<span class="badge-verify badge-verified" title="Math checks out">✓</span>';
+    return '<span class="badge-verify badge-mismatch" title="Math does not check out">✗</span>';
+  }
+
   function cellHtml(ii, bi){
-    var v=state.data.items[ii].values[bi];
+    var it=state.data.items[ii];
+    var v=it.values[bi];
     var adj=adjFor(bi,ii);
     var cls="cell-btn", inner="";
+    var rowType=it.row_type||"amount";
     if (v.status==="not_priced"){ cls+=" cell-missing"; inner='<span class="mono">—</span><div class="text-[11px]">not priced</div>'; }
     else if (v.status==="included"){ cls+=" cell-included"; inner='<span class="mono">Incl.</span>'; }
+    else if (v.status==="percent"&&v.amount!=null){
+      // percent rows: display as "1.79%" and NEVER sum into totals
+      var pct=(v.amount*100).toFixed(2)+"%";
+      inner='<span class="mono font-semibold">'+pct+'</span>'+verifyBadge(v);
+      if (it.base_value) inner+='<div class="text-[11px] text-slate-400">× '+fmt(it.base_value)+'</div>';
+      inner+='<div class="badge-rowtype">percent · not summed</div>';
+    }
     else if (v.amount!=null){
       var disp=v.amount+adj;
-      inner='<span class="mono font-semibold">'+fmt(disp)+'</span>';
+      inner='<span class="mono font-semibold">'+fmt(disp)+'</span>'+verifyBadge(v);
       if (adj) inner+='<div class="text-[11px]" style="color:var(--orange-dark)">'+fmtSigned(adj)+' adj</div>';
       else if (v.rate!=null) inner+='<div class="text-[11px] text-slate-400">'+fmt(v.rate)+' '+
-        escapeHtml(state.data.items[ii].unit||"")+'</div>';
+        escapeHtml(it.unit||"")+'</div>';
       if (isOutlier(ii,bi)) cls+=" cell-outlier";
     } else { cls+=" cell-missing"; inner='<span class="mono">—</span>'; }
     if (adj) cls+=" cell-adjusted";
-    var label=state.names[bi]+", "+state.data.items[ii].description;
+    if (v.confidence==="low") cls+=" cell-lowconf";
+    var label=state.names[bi]+", "+it.description;
     return '<button class="'+cls+'" data-bi="'+bi+'" data-ii="'+ii+'" aria-label="'+escapeHtml(label)+'">'+inner+'</button>';
   }
 
   function renderTable(){
     var d=state.data, n=d.bidders.length;
     var totals=[], i, bi;
-    for (bi=0;bi<n;bi++) totals.push(calcTotal(bi));
-    var low=totals.indexOf(Math.min.apply(null,totals));
+    for (bi=0;bi<n;bi++) totals.push(d.bidders[bi].excluded?null:calcTotal(bi));
+    // low bidder: only among non-excluded
+    var validTotals=totals.map(function(t,idx){return t==null?null:{t:t,idx:idx};}).filter(Boolean);
+    var low=validTotals.length? validTotals.reduce(function(a,b){return a.t<b.t?a:b;}).idx : -1;
 
     var head='<tr><th class="sticky-col text-left p-3 font-bold" style="color:var(--navy)">Scope item</th>'+
-      d.bidders.map(function(_,b2){return '<th class="p-3 text-right font-bold" style="color:var(--navy)">'+escapeHtml(state.names[b2])+'</th>';}).join("")+'</tr>';
+      d.bidders.map(function(b,b2){
+        var ex=b.excluded?' <span class="badge-excluded">excluded</span>':"";
+        return '<th class="p-3 text-right font-bold" style="color:var(--navy)">'+escapeHtml(state.names[b2])+ex+'</th>';
+      }).join("")+'</tr>';
     $("results-head").innerHTML=head;
 
     var body="";
@@ -383,46 +457,78 @@
       var cells="";
       for (bi=0;bi<n;bi++) cells+='<td class="p-1 border-t border-slate-100">'+cellHtml(ii,bi)+'</td>';
       var qty=it.qty!=null? '<div class="text-[11px] text-slate-400 mono">'+it.qty+' '+escapeHtml(it.unit||"")+'</div>' : "";
+      var rt=(it.row_type&&it.row_type!=="amount")? '<div class="badge-rowtype">'+it.row_type+'</div>' : "";
+      var nc=it.comparable===false? '<div><span class="badge-noncomp">⚠ not directly comparable — verify scope</span></div>' : "";
       body+='<tr><td class="sticky-col p-3 border-t border-slate-100"><div class="font-semibold text-[13px]">'+
-        escapeHtml(it.description)+'</div>'+qty+'</td>'+cells+'</tr>';
+        escapeHtml(it.description)+'</div>'+qty+rt+nc+'</td>'+cells+'</tr>';
     });
-    // totals rows
-    function totalRow(label, vals, cls){
+    // totals rows with three-state badges
+    function totalRow(label, vals, cls, states){
       var cells=vals.map(function(v,bi){
-        var inner= v==null? '<span class="mono text-slate-400">—</span>'
-          : '<span class="mono font-bold">'+fmt(v)+'</span>';
-        return '<td class="p-3 border-t-2 border-slate-200 text-right '+(cls||"")+(bi===low&&cls==="leveled"?" totals-low":"")+'">'+inner+'</td>';
+        var inner, badge="";
+        var st=states?states[bi]:null;
+        if (v==null){ inner='<span class="mono text-slate-400">—</span>'; }
+        else {
+          inner='<span class="mono font-bold">'+fmt(v)+'</span>';
+          if (st==="verified") badge='<span class="badge-verify badge-verified" title="Line items sum to this total">✓</span>';
+          else if (st==="mismatch") badge='<span class="badge-verify badge-mismatch" title="Line items do NOT sum to this total — see alerts">✗</span>';
+          else badge='<span class="badge-verify badge-unverified" title="Could not verify">?</span>';
+        }
+        if (d.bidders[bi].excluded) badge+=' <span class="badge-excluded">excluded</span>';
+        return '<td class="p-3 border-t-2 border-slate-200 text-right '+(cls||"")+(bi===low&&cls==="leveled"?" totals-low":"")+'">'+inner+badge+'</td>';
       }).join("");
       return '<tr class="totals-row bg-slate-50"><td class="sticky-col p-3 border-t-2 border-slate-200 font-bold text-[13px]">'+label+'</td>'+cells+'</tr>';
     }
-    body+=totalRow("Submitted total", d.submitted_totals);
-    body+=totalRow("Leveled total", totals, "leveled");
+    var states=d.bidders.map(function(b){return b.total_state||"unparseable";});
+    body+=totalRow("Submitted total", d.submitted_totals, "", states);
+    body+=totalRow("Leveled total", totals, "leveled", states);
+    // value-weighted ranking row
+    if (d.value_scores && d.value_scores.some(function(s){return s!=null;})){
+      var vsCells=d.value_scores.map(function(s,bi){
+        if (s==null) return '<td class="p-3 border-t border-slate-200 text-right"><span class="mono text-slate-400">—</span></td>';
+        return '<td class="p-3 border-t border-slate-200 text-right"><span class="mono font-semibold">'+fmt(s)+'</span>'+
+          '<div class="text-[10px] text-slate-400">value-weighted</div></td>';
+      }).join("");
+      body+='<tr class="bg-blue-50/50"><td class="sticky-col p-3 border-t border-slate-200 font-bold text-[13px]" style="background:#eff6ff">Value-weighted score <span class="font-normal text-slate-500">(lower = better)</span></td>'+vsCells+'</tr>';
+    }
     $("results-body").innerHTML=body;
 
     $("project-title").textContent=d.project_name||"Leveled comparison";
     $("results-meta").textContent=d.bidders.length+" bidders · "+d.items.length+" scope items · click any cell to adjust";
 
-    // math alerts
+    // math alerts — three-state: show BOTH values on mismatch, never auto-fix
     var alerts=[];
     d.bidders.forEach(function(b,bi){
       var sub=d.submitted_totals[bi], calc=totals[bi];
-      if (sub!=null){
-        var diff=Math.abs(calc-sub), tol=Math.max(1, Math.abs(sub)*0.002);
-        if (diff>tol){
-          alerts.push('<div class="p-3 rounded-lg bg-red-50 text-red-900 text-sm">⚠ <strong>'+
-            escapeHtml(state.names[bi])+'</strong>: line items sum to '+fmt(calc)+
-            ' but the source shows '+fmt(sub)+' — possible math error in the bid tab.</div>');
-        }
+      if (b.total_state==="mismatch" && sub!=null && calc!=null){
+        alerts.push('<div class="p-3 rounded-lg bg-red-50 text-red-900 text-sm">✗ <strong>'+
+          escapeHtml(state.names[bi])+'</strong>: line items sum to '+fmt(calc)+
+          ' but the bid tab shows '+fmt(sub)+
+          '. <strong>Both values shown — you decide which is correct.</strong> The table uses the calculated sum.</div>');
+      } else if (b.total_state==="unparseable"){
+        alerts.push('<div class="p-3 rounded-lg bg-slate-100 text-slate-700 text-sm">? <strong>'+
+          escapeHtml(state.names[bi])+'</strong>: not enough data to verify the total. Treat all numbers as unverified.</div>');
       }
-    });
-    // all-zero / not-priced bidder check
-    d.bidders.forEach(function(b,bi){
-      var priced=d.items.filter(function(it){return it.values[bi].status==="priced";}).length;
-      if (priced===0){
+      if (b.excluded){
         alerts.push('<div class="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm">⚠ <strong>'+
-          escapeHtml(state.names[bi])+'</strong> has no priced line items — excluded from low-bidder calculation.</div>');
+          escapeHtml(state.names[bi])+'</strong> has no priced line items — excluded from low-bidder calculation and all statistics.</div>');
       }
     });
+    // low-confidence cell alert
+    var lowConf=0;
+    d.items.forEach(function(it){ it.values.forEach(function(v){ if(v.confidence==="low") lowConf++; }); });
+    if (lowConf>0){
+      alerts.push('<div class="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm">⚠ <strong>'+
+        lowConf+' cells</strong> have low extraction confidence (highlighted with amber border). '+
+        'Review these against the source before relying on them.</div>');
+    }
+    // non-comparable rows alert
+    var nc=d.items.filter(function(it){return it.comparable===false;}).length;
+    if (nc>0){
+      alerts.push('<div class="p-3 rounded-lg bg-amber-50 text-amber-900 text-sm">⚠ <strong>'+
+        nc+' rows</strong> flagged "not directly comparable" — the scope may differ between bidders '+
+        'despite similar descriptions. Verify before comparing.</div>');
+    }
     $("math-alerts").innerHTML=alerts.join("");
   }
 
