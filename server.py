@@ -96,6 +96,125 @@ def verify_cell(qty, rate, amount, tolerance=0.02):
     return "unverified"
 
 
+def parse_money_all(raw):
+    """All money-like values stacked in one cell (as-bid over corrected, etc.).
+    Returns list of (value, text) with dupes removed, preserving order."""
+    if raw is None:
+        return []
+    out, seen = [], set()
+    for p in re.split(r"[\r\n]+", str(raw)):
+        v, st = parse_money(p)
+        if st == "priced" and v not in seen:
+            seen.add(v)
+            out.append((v, p.strip()))
+    return out
+
+
+def parse_minmax(desc):
+    """Item-level min/max bid constraints, e.g. 'Minimum Bid of $7,500.00 Lump Sum'.
+    Returns (min_or_None, max_or_None)."""
+    d = desc or ""
+    mn = mx = None
+    m = re.search(r"minimum\s+bid\s+(?:of\s+)?\$?\s*([\d,]+(?:\.\d+)?)", d, re.I)
+    if m:
+        try:
+            mn = float(m.group(1).replace(",", ""))
+        except ValueError:
+            pass
+    m = re.search(r"maximum\s+bid\s+(?:of\s+)?\$?\s*([\d,]+(?:\.\d+)?)", d, re.I)
+    if m:
+        try:
+            mx = float(m.group(1).replace(",", ""))
+        except ValueError:
+            pass
+    return mn, mx
+
+
+def detect_tax_rate(row):
+    """Find '8.50%' style rate in a tax row. Returns decimal or None."""
+    joined = " ".join(str(c or "") for c in row)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*%", joined)
+    if m:
+        try:
+            return float(m.group(1)) / 100.0
+        except ValueError:
+            pass
+    return None
+
+
+SERVICE_WORDS = ("mow", "maintenance", "cleaning", "janitorial", "landscape",
+                 "lawn", "fertiliz", "pruning", "cleanup", "snow removal",
+                 "per visit", "weekly", "monthly", "per season", "service")
+
+
+def compute_basis_state(items):
+    """Separate 'math verified' from 'basis verified'.
+    Returns (state, notes): verified | suspect | unknown.
+    'unknown' = recurring-service bid with no quantity/frequency dimension —
+    the comparison basis is void and the product must refuse to rank."""
+    amount_items = [it for it in items if it.get("row_type", "amount") == "amount"]
+    if not amount_items:
+        return "unknown", ["no amount rows extracted"]
+    with_qty = sum(1 for it in amount_items if it.get("qty") is not None)
+    notes = []
+    service_like = any(
+        any(w in (it.get("description") or "").lower() for w in SERVICE_WORDS)
+        for it in amount_items)
+    if with_qty == 0 and service_like:
+        return "unknown", [
+            "no quantity or frequency stated anywhere — recurring-service bid. "
+            "Per-site prices cannot be compared without a visits-per-period basis."]
+    if with_qty == 0:
+        notes.append("no quantities stated — lump-sum comparison only; "
+                     "spreads reflect scope interpretation, not unit pricing")
+    elif with_qty < len(amount_items) * 0.8:
+        notes.append(f"only {with_qty}/{len(amount_items)} items carry quantities")
+    noncomp = sum(1 for it in amount_items if it.get("comparable") is False)
+    if noncomp:
+        notes.append(f"{noncomp} row(s) flagged not directly comparable")
+    return ("suspect" if notes else "verified"), notes
+
+
+def compute_ranking(items, bidder_excluded, bidder_names, extraction_quality,
+                    low_conf_counts, blocked=False):
+    """Ranking with honesty states: ranked | too_close | blocked.
+    'blocked' = service bid with no quantity basis — refuse to rank.
+    'too_close' = top-two margin below extraction uncertainty."""
+    totals = []
+    for gi in range(len(bidder_names)):
+        if bidder_excluded[gi]:
+            totals.append(None)
+            continue
+        t = sum(v["amount"] for it in items for v in [it["values"][gi]]
+                if it.get("row_type", "amount") == "amount"
+                and not it.get("deduct") and not it.get("alternate")
+                and v["status"] in ("priced", "included")
+                and v["amount"] is not None)
+        totals.append(t)
+    order = sorted((t, gi) for gi, t in enumerate(totals) if t is not None)
+    if blocked:
+        return {"state": "blocked", "winner": None, "margin": None,
+                "margin_pct": None, "totals": totals,
+                "note": "No quantity/frequency basis — ranking withheld."}
+    if len(order) < 2:
+        return {"state": "ranked",
+                "winner": order[0][1] if order else None,
+                "margin": None, "margin_pct": None, "totals": totals, "note": ""}
+    (t1, w1), (t2, w2) = order[0], order[1]
+    margin = t2 - t1
+    pct = (margin / t1) if t1 else 0
+    low_top2 = (low_conf_counts[w1] if w1 < len(low_conf_counts) else 0) + \
+               (low_conf_counts[w2] if w2 < len(low_conf_counts) else 0)
+    if pct < 0.02 and (low_top2 > 0 or extraction_quality == "poor"):
+        return {"state": "too_close", "winner": None, "margin": margin,
+                "margin_pct": pct, "totals": totals,
+                "note": (f"Top two bids differ by {pct * 100:.1f}% "
+                         f"(${margin:,.0f}) — below extraction uncertainty. "
+                         "Verify flagged cells before awarding.")}
+    return {"state": "ranked", "winner": w1, "margin": margin,
+            "margin_pct": pct, "totals": totals, "note": ""}
+
+
 def norm_desc(s):
     s = (s or "").lower()
     s = re.sub(r"\(note \d+\)", "", s)
@@ -140,7 +259,14 @@ def is_subtotal_row(row):
 
 
 def is_tax_row(row):
-    return any(w in row_label(row) for w in TAX_WORDS)
+    # scan the whole row: tax rows can carry the rate ("8.5") in the item-number
+    # column with the description elsewhere (Sim 15). Avoid matching item
+    # descriptions that merely mention tax as a word — require tax + money/%.
+    joined = " ".join(norm_desc(c) for c in row if c)
+    if not any(w in joined for w in TAX_WORDS):
+        return False
+    raw = " ".join(str(c or "") for c in row)
+    return bool(re.search(r"\d", raw))  # must carry a number (rate or amount)
 
 
 # ---------------------------------------------------------------- PDF (multi-bidder tab mode)
@@ -290,7 +416,10 @@ def extract_pdf_tab(path, filename):
 
     # item rows
     items = []
-    submitted, subtotals, taxes = [None] * n_bidders, [None] * n_bidders, [None] * n_bidders
+    submitted, subtotals = [None] * n_bidders, [None] * n_bidders
+    taxes = [0.0] * n_bidders
+    has_tax_rows = False
+    tax_rate_detected = None
     for r in data[hdr_idx + 1:]:
         if not r or not any((c or "").strip() for c in r):
             continue
@@ -307,10 +436,14 @@ def extract_pdf_tab(path, filename):
                     subtotals[gi] = v
             continue
         if is_tax_row(r):
+            has_tax_rows = True
+            rate = detect_tax_rate(r)
+            if rate and tax_rate_detected is None:
+                tax_rate_detected = rate
             for gi, (tc, _) in enumerate(groups):
                 v, st = parse_money(r[tc] if tc < len(r) else "")
                 if st == "priced":
-                    taxes[gi] = v
+                    taxes[gi] += v  # multiple tax rows (per schedule) accumulate
             continue
         desc = (r[0] or "").strip()
         if not desc or len(desc) < 2:
@@ -323,18 +456,33 @@ def extract_pdf_tab(path, filename):
             qty = None
         vals = []
         row_type = detect_row_type(desc, " ".join(header))
+        # substitution-alternate structure: deduct rows mirror base items, alternate
+        # rows replace them. NEVER auto-combine: the gate lives in the frontend.
+        dl = desc.lower()
+        is_deduct = "deduct" in dl
+        is_alternate = ("alternate" in dl or "in lieu of" in dl) and not is_deduct
+        min_bid, max_bid = parse_minmax(desc)
         # comparable flag: qualifier words escalate to human review
         comparable = True
         qualifiers = ("only", "excluding", "not including", "per vendor", "if necessary",
                       "alternate", "deduct", "additive")
-        if any(q in desc.lower() for q in qualifiers):
+        if any(q in dl for q in qualifiers):
             comparable = False
         for gi, (tc, rc) in enumerate(groups):
             amt_raw = r[tc] if tc < len(r) else ""
             rate_raw = r[rc] if rc is not None and rc < len(r) else ""
-            amt, st = parse_money(amt_raw)
             rate, _ = parse_money(rate_raw)
             verbatim = str(amt_raw or "").strip()
+            # stacked as-bid vs corrected values in one cell (Sim 12): force human pick
+            stacked = parse_money_all(amt_raw)
+            if len(stacked) > 1:
+                vals.append({"amount": None, "rate": rate, "status": "ambiguous",
+                             "alternatives": [{"amount": v, "raw": t} for v, t in stacked],
+                             "raw": verbatim, "verbatim": verbatim,
+                             "confidence": "low", "verify": "unverified",
+                             "min_violation": False, "max_violation": False})
+                continue
+            amt, st = parse_money(amt_raw)
             # confidence: high if verbatim parses cleanly, medium if repaired, low if ambiguous
             confidence = "high"
             if st == "text":
@@ -343,40 +491,90 @@ def extract_pdf_tab(path, filename):
                 confidence = "medium"
             # verification: check qty x rate = amount where possible
             verify = verify_cell(qty, rate, amt) if st == "priced" else "unverified"
+            # item-level min/max bid constraints (Sim 15): flag, never silently carry
+            min_viol = min_bid is not None and st == "priced" and amt is not None and amt < min_bid - 0.005
+            max_viol = max_bid is not None and st == "priced" and amt is not None and amt > max_bid + 0.005
+            if min_viol:
+                warnings.append(
+                    f"{bidder_names[gi]}: '{desc[:60]}' bid ${amt:,.2f} is below the "
+                    f"stated minimum ${min_bid:,.2f} — responsiveness risk, verify with owner")
+                confidence = "low"
             vals.append({"amount": amt, "rate": rate, "status": st,
                          "raw": verbatim, "verbatim": verbatim,
-                         "confidence": confidence, "verify": verify})
+                         "confidence": confidence, "verify": verify,
+                         "min_violation": min_viol, "max_violation": max_viol})
         # skip rows with no priced data at all (section headers etc.)
-        if not any(v["status"] in ("priced", "included") for v in vals):
+        if not any(v["status"] in ("priced", "included", "ambiguous") for v in vals):
             # keep rows where at least one bidder has not_priced but others priced
             if all(v["status"] == "not_priced" or v["status"] == "text" for v in vals):
                 continue
         items.append({"description": desc, "qty": qty, "unit": unit_raw, "values": vals,
-                        "row_type": row_type, "comparable": comparable,
-                        "base_value": None})  # base_value set for percent rows when known
+                      "row_type": row_type, "comparable": comparable,
+                      "deduct": is_deduct, "alternate": is_alternate,
+                      "min_bid": min_bid, "max_bid": max_bid,
+                      "frequency": None,  # user-supplied visits-per-period (service bids)
+                      "base_value": None})  # base_value set for percent rows when known
 
-    # math verification with three-state totals (verified / mismatch / unparseable)
-    # NEVER sum rate/percent/fee_component rows into totals
-    total_states = []
-    for gi in range(n_bidders):
-        calc = sum(v["amount"] for it in items for v in [it["values"][gi]]
+    has_substitution_alternates = (any(it.get("deduct") for it in items)
+                                   and any(it.get("alternate") for it in items))
+    if has_substitution_alternates:
+        warnings.append(
+            "Substitution alternate detected (deduct rows + alternate rows). "
+            "Combined totals are WITHHELD until you confirm how each bidder's deduct "
+            "maps to the replaced base items — adding the alternate without subtracting "
+            "the per-bidder deducts overstates every total.")
+    n_ambiguous = sum(1 for it in items for v in it["values"] if v["status"] == "ambiguous")
+    if n_ambiguous:
+        warnings.append(
+            f"{n_ambiguous} cell(s) contain stacked as-bid AND corrected values — "
+            "pick the authoritative value for each before leveling.")
+
+    def _base_calc(gi):
+        # NEVER sum rate/percent/fee_component rows; NEVER sum deduct/alternate
+        # scenario rows into the base total.
+        return sum(v["amount"] for it in items for v in [it["values"][gi]]
                    if it.get("row_type", "amount") == "amount"
+                   and not it.get("deduct") and not it.get("alternate")
                    and v["status"] in ("priced", "included") and v["amount"] is not None)
+
+    # math verification with three-state totals (verified / mismatch / unparseable).
+    # Tax-aware: a tax-inclusive submitted total must match items + extracted tax
+    # (Sim 15 selective-tax tabs). Try tax-inclusive first, then tax-exclusive.
+    total_states = []
+    tax_basis_detected = []
+    for gi in range(n_bidders):
+        calc = _base_calc(gi)
+        tax = taxes[gi] if has_tax_rows else 0.0
         base = subtotals[gi] if subtotals[gi] is not None else submitted[gi]
-        n_amount_rows = sum(1 for it in items if it.get("row_type", "amount") == "amount")
+        n_amount_rows = sum(1 for it in items
+                            if it.get("row_type", "amount") == "amount"
+                            and not it.get("deduct") and not it.get("alternate"))
+        state, basis = "unparseable", None
         if base is not None and n_amount_rows > 0:
-            if abs(calc - base) <= max(1.0, abs(base) * 0.002):
-                total_states.append("verified")
+            tol = max(1.0, abs(base) * 0.002)
+            if has_tax_rows and abs((calc + tax) - base) <= tol:
+                state, basis = "verified", "tax_included"
+            elif abs(calc - base) <= tol:
+                state, basis = "verified", "tax_excluded"
             else:
-                total_states.append("mismatch")
+                state = "mismatch"
                 warnings.append(
                     f"{bidder_names[gi]}: line items sum to "
-                    f"${calc:,.2f} but {'subtotal' if subtotals[gi] is not None else 'total'} "
+                    f"${calc:,.2f}" + (f" + ${tax:,.2f} tax" if has_tax_rows else "") +
+                    f" but {'subtotal' if subtotals[gi] is not None else 'total'} "
                     f"shows ${base:,.2f} - showing BOTH, human must adjudicate")
-        elif n_amount_rows == 0:
-            total_states.append("unparseable")
-        else:
-            total_states.append("unparseable")
+        # award-basis suggestion comes from the SUBMITTED total (the actual bid):
+        # if the bid tab's bottom line includes tax, awards are tax-inclusive.
+        award_b = None
+        sub = submitted[gi]
+        if sub is not None and n_amount_rows > 0:
+            tol_s = max(1.0, abs(sub) * 0.002)
+            if has_tax_rows and abs((calc + tax) - sub) <= tol_s:
+                award_b = "tax_included"
+            elif abs(calc - sub) <= tol_s:
+                award_b = "tax_excluded"
+        total_states.append(state)
+        tax_basis_detected.append(award_b)
 
     # disqualified / all-zero bidder detection
     bidder_excluded = []
@@ -390,6 +588,33 @@ def extract_pdf_tab(path, filename):
                 f"{bidder_names[gi]}: no priced line items - excluded from "
                 f"low-bidder calculation and statistics")
 
+    # extraction quality: fraction of money-column cells that parse
+    data_cells = parsed_cells = 0
+    for r in data[hdr_idx + 1:]:
+        for (tc, rc) in groups:
+            for c in (tc, rc):
+                if c is not None and c < len(r):
+                    cell = (r[c] or "").strip()
+                    if cell:
+                        data_cells += 1
+                        if parse_money(cell)[1] in ("priced", "not_priced", "included", "percent"):
+                            parsed_cells += 1
+    extraction_quality = "good" if (data_cells == 0 or parsed_cells / data_cells >= 0.6) else "poor"
+
+    # basis state (math vs basis badges) + ranking honesty states
+    basis_state, basis_notes = compute_basis_state(items)
+    low_conf_counts = [sum(1 for it in items if it["values"][gi]["confidence"] == "low")
+                       for gi in range(n_bidders)]
+    ranking = compute_ranking(items, bidder_excluded, bidder_names,
+                              extraction_quality, low_conf_counts,
+                              blocked=(basis_state == "unknown"))
+    if ranking["state"] == "blocked":
+        warnings.append(
+            "⛔ Cannot rank these bids: " + " ".join(basis_notes) +
+            " Enter a visits-per-period frequency to see a PROVISIONAL comparison.")
+    elif ranking["state"] == "too_close":
+        warnings.append("⚠ " + ranking["note"])
+
     # value-weighted ranking: weight rows by dollar value, not count
     # score = sum over rows of (bidder_price / median_price * row_median_value)
     # lower score = better value
@@ -401,6 +626,8 @@ def extract_pdf_tab(path, filename):
         score = 0.0
         for it in items:
             if it.get("row_type", "amount") != "amount":
+                continue
+            if it.get("deduct") or it.get("alternate"):
                 continue
             row_vals = [it["values"][g]["amount"] for g in range(n_bidders)
                         if not bidder_excluded[g]
@@ -428,6 +655,14 @@ def extract_pdf_tab(path, filename):
         "submitted_totals": submitted,
         "subtotals": subtotals,
         "taxes": taxes,
+        "has_tax_rows": has_tax_rows,
+        "tax_rate_detected": tax_rate_detected,
+        "tax_basis_detected": tax_basis_detected,
+        "has_substitution_alternates": has_substitution_alternates,
+        "basis_state": basis_state,
+        "basis_notes": basis_notes,
+        "ranking": ranking,
+        "extraction_quality": extraction_quality,
         "warnings": warnings,
         "bidder_confidence": name_conf,
         "value_scores": value_scores,
@@ -525,16 +760,27 @@ def merge_single_bids(bidders):
         for it in b["items"]:
             hit = next((m for m in items if desc_match(m["description"], it["description"])), None)
             if hit is None:
+                dl = (it["description"] or "").lower()
+                mn, mx = parse_minmax(it["description"])
                 hit = {"description": it["description"], "qty": None, "unit": "",
                        "row_type": "amount", "comparable": True, "base_value": None,
+                       "deduct": "deduct" in dl,
+                       "alternate": ("alternate" in dl or "in lieu of" in dl) and "deduct" not in dl,
+                       "min_bid": mn, "max_bid": mx, "frequency": None,
                        "values": [{"amount": None, "rate": None, "status": "not_priced",
                                    "raw": "", "verbatim": "", "confidence": "low",
-                                   "verify": "unverified"} for _ in bidders]}
+                                   "verify": "unverified",
+                                   "min_violation": False, "max_violation": False}
+                                  for _ in bidders]}
                 items.append(hit)
-            hit["values"][bi] = {"amount": it["raw_amount"], "rate": None,
+            mn, mx = hit.get("min_bid"), hit.get("max_bid")
+            amt = it["raw_amount"]
+            min_viol = mn is not None and it["raw_status"] == "priced" and amt is not None and amt < mn - 0.005
+            hit["values"][bi] = {"amount": amt, "rate": None,
                                  "status": it["raw_status"], "raw": "",
                                  "verbatim": "", "confidence": "medium",
-                                 "verify": "unverified"}
+                                 "verify": "unverified",
+                                 "min_violation": min_viol, "max_violation": False}
     return items
 
 
@@ -609,6 +855,19 @@ def upload():
                          if it["values"][bi]["status"] == "priced"
                          and it["values"][bi]["amount"] not in (None, 0))
             bidder_excluded.append(priced == 0)
+        basis_state, basis_notes = compute_basis_state(items)
+        low_conf_counts = [sum(1 for it in items if it["values"][bi]["confidence"] == "low")
+                           for bi in range(n_b)]
+        ranking = compute_ranking(items, bidder_excluded,
+                                  [b["name"] for b in bidders],
+                                  "good", low_conf_counts,
+                                  blocked=(basis_state == "unknown"))
+        warnings_b = warnings + [
+            "single-bid files: bidder names taken from filenames - please confirm"]
+        if ranking["state"] == "blocked":
+            warnings_b.append("⛔ Cannot rank these bids: " + " ".join(basis_notes))
+        elif ranking["state"] == "too_close":
+            warnings_b.append("⚠ " + ranking["note"])
         return jsonify({
             "project_name": "Bid package",
             "mode": "bids",
@@ -618,9 +877,18 @@ def upload():
             "items": items,
             "submitted_totals": [None] * len(bidders),
             "subtotals": [None] * len(bidders),
-            "taxes": [None] * len(bidders),
-            "warnings": warnings + [
-                "single-bid files: bidder names taken from filenames - please confirm"],
+            "taxes": [0.0] * len(bidders),
+            "has_tax_rows": False,
+            "tax_rate_detected": None,
+            "tax_basis_detected": [None] * len(bidders),
+            "has_substitution_alternates": (
+                any(it.get("deduct") for it in items)
+                and any(it.get("alternate") for it in items)),
+            "basis_state": basis_state,
+            "basis_notes": basis_notes,
+            "ranking": ranking,
+            "extraction_quality": "good",
+            "warnings": warnings_b,
             "bidder_confidence": "low",
             "value_scores": [None] * len(bidders),
         })
