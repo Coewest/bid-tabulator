@@ -1814,7 +1814,7 @@ def _gp_draw_waivers(did):
     try:
         rows = db.execute(
             "SELECT id, company_id, draw_id, sub_name, sub_email, waiver_kind,"
-            " waiver_scope, amount, status, token, signed_at, created_at"
+            " waiver_scope, amount, status, token, signed_at, signed_name, created_at"
             " FROM lien_waivers WHERE draw_id=? ORDER BY id", (did,)).fetchall()
         return [dict(r) for r in rows]
     finally:
@@ -2153,7 +2153,7 @@ def register_getpaid_routes(app):
             wid = cur.lastrowid
             row = db.execute(
                 "SELECT id, company_id, draw_id, sub_name, sub_email, waiver_kind,"
-                " waiver_scope, amount, status, token, signed_at, created_at"
+                " waiver_scope, amount, status, token, signed_at, signed_name, created_at"
                 " FROM lien_waivers WHERE id=?", (wid,)).fetchone()
         finally:
             db.close()
@@ -2192,7 +2192,7 @@ def register_getpaid_routes(app):
                 db.commit()
             row = db.execute(
                 "SELECT id, company_id, draw_id, sub_name, sub_email, waiver_kind,"
-                " waiver_scope, amount, status, token, signed_at, created_at"
+                " waiver_scope, amount, status, token, signed_at, signed_name, created_at"
                 " FROM lien_waivers WHERE id=?", (wid,)).fetchone()
             return jsonify(waiver=dict(row))
         finally:
@@ -2286,14 +2286,12 @@ def register_getpaid_routes(app):
             if row["status"] == "signed":
                 return jsonify(error="already_signed"), 409
             signed_at = _gp_now()
-            db.execute("UPDATE lien_waivers SET status='signed', signed_at=?"
-                       " WHERE id=?", (signed_at, row["id"]))
+            db.execute("UPDATE lien_waivers SET status='signed', signed_at=?, signed_name=?"
+                       " WHERE id=?", (signed_at, signed_name, row["id"]))
             db.commit()
         finally:
             db.close()
-        # NOTE: the spec has no signed_name column; the typed name is
-        # acknowledged as the signature act but not persisted.
-        return jsonify(ok=True, signed_at=signed_at)
+        return jsonify(ok=True, signed_at=signed_at, signed_name=signed_name)
 
 
 register_getpaid_routes(app)
