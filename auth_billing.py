@@ -21,6 +21,7 @@ import os
 import secrets
 import sqlite3
 import time
+from datetime import datetime, timezone
 from functools import wraps
 
 from flask import g, jsonify, request, session
@@ -38,6 +39,9 @@ STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID", "")  # $129/mo recurring price
 STRIPE_PRICE_ID_ANNUAL = os.environ.get("STRIPE_PRICE_ID_ANNUAL", "")  # $1,290/yr recurring price
+# Get-Paid suite ($99/mo). Env var overrides the baked-in fallback.
+STRIPE_PRICE_ID_GETPAID = os.environ.get("STRIPE_PRICE_ID_GETPAID",
+                                         "price_1UPN87GjNNTRCkRobuKW4BCa")
 APP_URL = os.environ.get("APP_URL", "https://bid-tabulator-production.up.railway.app").rstrip("/")
 
 FREE_TABULATIONS = 1
@@ -45,6 +49,10 @@ FREE_TABULATIONS = 1
 
 def stripe_configured():
     return bool(stripe and STRIPE_SECRET_KEY and STRIPE_PRICE_ID)
+
+
+def getpaid_configured():
+    return bool(stripe and STRIPE_SECRET_KEY and STRIPE_PRICE_ID_GETPAID)
 
 
 def get_db():
@@ -89,6 +97,68 @@ def init_db():
     );
     CREATE INDEX IF NOT EXISTS idx_pv_created ON page_views(created_at);
     CREATE INDEX IF NOT EXISTS idx_pv_visitor ON page_views(visitor_hash);
+    -- Get-Paid suite tables (2026-10-11). company_id = users.id: this app has
+    -- no companies table; one account = one company.
+    CREATE TABLE IF NOT EXISTS getpaid_projects (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        client_name TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gp_projects_company ON getpaid_projects(company_id);
+    CREATE TABLE IF NOT EXISTS pay_draws (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_id INTEGER NOT NULL,
+        project_id INTEGER NOT NULL REFERENCES getpaid_projects(id),
+        draw_number INTEGER NOT NULL DEFAULT 1,
+        period_start TEXT,
+        period_end TEXT,
+        status TEXT NOT NULL DEFAULT 'draft',
+        retainage_pct REAL NOT NULL DEFAULT 10,
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_pay_draws_project ON pay_draws(project_id);
+    CREATE INDEX IF NOT EXISTS idx_pay_draws_company ON pay_draws(company_id);
+    CREATE TABLE IF NOT EXISTS pay_draw_lines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        draw_id INTEGER NOT NULL REFERENCES pay_draws(id),
+        description TEXT NOT NULL,
+        scheduled_value REAL NOT NULL DEFAULT 0,
+        pct_complete REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_pay_draw_lines_draw ON pay_draw_lines(draw_id);
+    CREATE TABLE IF NOT EXISTS lien_waivers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_id INTEGER NOT NULL,
+        draw_id INTEGER NOT NULL REFERENCES pay_draws(id),
+        sub_name TEXT NOT NULL,
+        sub_email TEXT NOT NULL DEFAULT '',
+        waiver_kind TEXT NOT NULL DEFAULT '',
+        waiver_scope TEXT NOT NULL DEFAULT '',
+        amount REAL NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        token TEXT UNIQUE,
+        signed_at TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_lien_waivers_draw ON lien_waivers(draw_id);
+    CREATE INDEX IF NOT EXISTS idx_lien_waivers_company ON lien_waivers(company_id);
+    CREATE INDEX IF NOT EXISTS idx_lien_waivers_token ON lien_waivers(token);
+    CREATE TABLE IF NOT EXISTS company_services (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        company_id INTEGER NOT NULL,
+        service_key TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        stripe_subscription_id TEXT,
+        stripe_price_id TEXT,
+        current_period_end TEXT,
+        created_at TEXT NOT NULL,
+        UNIQUE (company_id, service_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_company_services_company ON company_services(company_id);
     """)
     # Migration: company profile fields
     cols = [r[1] for r in db.execute("PRAGMA table_info(users)")]
@@ -161,6 +231,21 @@ def login_required(fn):
     return wrapper
 
 
+def getpaid_required(fn):
+    """Get-Paid suite gate: logged in AND the getpaid service active.
+    Tabulator tabulations use the existing can_upload paywall, unchanged."""
+    @wraps(fn)
+    def wrapper(*a, **kw):
+        u = current_user()
+        if not u:
+            return jsonify(error="login required"), 401
+        g.user = u
+        if not service_active(u["id"], "getpaid"):
+            return jsonify(error="subscription_required"), 402
+        return fn(*a, **kw)
+    return wrapper
+
+
 def subscription_status(user_id: int) -> str:
     db = get_db()
     try:
@@ -184,6 +269,55 @@ def tabulation_count(user_id: int) -> int:
         row = db.execute(
             "SELECT COUNT(*) c FROM tabulations WHERE user_id=?", (user_id,)).fetchone()
         return row["c"]
+    finally:
+        db.close()
+
+
+def _utcnow():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def service_active(company_id: int, service_key: str) -> bool:
+    """True when the company has an active row for the given service key
+    in company_services. company_id = users.id (one account = one company)."""
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT status FROM company_services WHERE company_id=? AND service_key=?",
+            (company_id, service_key)).fetchone()
+        return bool(row) and row["status"] == "active"
+    finally:
+        db.close()
+
+
+def upsert_company_service(company_id, service_key, stripe_subscription_id=None,
+                           stripe_price_id=None, status="active", current_period_end=None):
+    """Create or update a company_services row. None arguments leave the
+    existing column value untouched."""
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT id FROM company_services WHERE company_id=? AND service_key=?",
+            (company_id, service_key)).fetchone()
+        if row:
+            db.execute(
+                """UPDATE company_services SET
+                     stripe_subscription_id=COALESCE(?, stripe_subscription_id),
+                     stripe_price_id=COALESCE(?, stripe_price_id),
+                     status=COALESCE(?, status),
+                     current_period_end=COALESCE(?, current_period_end)
+                   WHERE id=?""",
+                (stripe_subscription_id, stripe_price_id, status,
+                 current_period_end, row["id"]))
+        else:
+            db.execute(
+                """INSERT INTO company_services
+                   (company_id, service_key, status, stripe_subscription_id,
+                    stripe_price_id, current_period_end, created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (company_id, service_key, status or "active", stripe_subscription_id,
+                 stripe_price_id, current_period_end, _utcnow()))
+        db.commit()
     finally:
         db.close()
 
@@ -523,13 +657,48 @@ def register_routes(app):
             customer_id = sess.get("customer")
             sub_id = sess.get("subscription")
             interval = (sess.get("metadata") or {}).get("interval") or "month"
+            service_key = (sess.get("metadata") or {}).get("service_key") or ""
             if uid and sub_id:
                 sub = stripe.Subscription.retrieve(sub_id)
-                upsert(uid, customer_id, sub_id, sub["status"],
-                       sub.get("current_period_end"), interval)
+                if service_key == "getpaid":
+                    # Get-Paid suite checkout: record the service row.
+                    price_id = None
+                    try:
+                        items = (sub.get("items") or {}).get("data") or []
+                        if items:
+                            price_id = (items[0].get("price") or {}).get("id")
+                    except Exception:
+                        pass
+                    cpe = sub.get("current_period_end")
+                    upsert_company_service(
+                        uid, "getpaid",
+                        stripe_subscription_id=sub_id,
+                        stripe_price_id=price_id,
+                        status=sub["status"],
+                        current_period_end=(_utcnow() if not cpe else
+                                           datetime.fromtimestamp(cpe, timezone.utc).isoformat()))
+                else:
+                    upsert(uid, customer_id, sub_id, sub["status"],
+                           sub.get("current_period_end"), interval)
         elif etype in ("customer.subscription.updated", "customer.subscription.deleted"):
             sub = obj
             customer_id = sub.get("customer")
+            # Get-Paid service rows are keyed by stripe_subscription_id.
+            cpe = sub.get("current_period_end")
+            gp_row = None
+            db = get_db()
+            try:
+                gp_row = db.execute(
+                    "SELECT company_id, service_key FROM company_services"
+                    " WHERE stripe_subscription_id=?", (sub["id"],)).fetchone()
+            finally:
+                db.close()
+            if gp_row:
+                upsert_company_service(
+                    gp_row["company_id"], gp_row["service_key"],
+                    status=sub["status"],
+                    current_period_end=(_utcnow() if not cpe else
+                                       datetime.fromtimestamp(cpe, timezone.utc).isoformat()))
             # derive interval from the subscription's price
             interval = "month"
             try:
@@ -557,3 +726,77 @@ def register_routes(app):
     def billing_config():
         return jsonify(publishable_key=STRIPE_PUBLISHABLE_KEY or None,
                        configured=stripe_configured())
+
+    # ------------------------------------------------- services (multi-product)
+
+    @app.get("/api/billing/services")
+    @login_required
+    def billing_services():
+        """Per-service subscription status for the Billing settings page."""
+        tab_active = subscription_status(g.user["id"]) == "active"
+        gp_active = service_active(g.user["id"], "getpaid")
+        return jsonify(services=[
+            {"key": "tabulator", "name": "Bid Tabulator", "price": "$129/mo",
+             "active": tab_active},
+            {"key": "getpaid", "name": "Get-Paid suite", "price": "$99/mo",
+             "active": gp_active},
+        ])
+
+    @app.post("/api/billing/services/getpaid/subscribe")
+    @login_required
+    def getpaid_subscribe():
+        """Stripe Checkout for the Get-Paid suite ($99/mo). Mirrors the
+        /api/stripe/checkout pattern; the webhook upserts company_services."""
+        if not getpaid_configured():
+            return jsonify(error="billing_not_configured"), 503
+        stripe.api_key = STRIPE_SECRET_KEY
+        db = get_db()
+        try:
+            # One account = one Stripe customer; reuse the tabulator customer.
+            sub = db.execute("SELECT stripe_customer_id FROM subscriptions WHERE user_id=?",
+                             (g.user["id"],)).fetchone()
+            customer_id = sub["stripe_customer_id"] if sub else None
+        finally:
+            db.close()
+        try:
+            kwargs = {
+                "mode": "subscription",
+                "line_items": [{"price": STRIPE_PRICE_ID_GETPAID, "quantity": 1}],
+                "success_url": f"{APP_URL}/?billing=getpaid_success",
+                "cancel_url": f"{APP_URL}/?billing=getpaid_cancelled",
+                "metadata": {"user_id": str(g.user["id"]), "service_key": "getpaid"},
+            }
+            if customer_id:
+                kwargs["customer"] = customer_id
+            else:
+                kwargs["customer_email"] = g.user["email"]
+            sess = stripe.checkout.Session.create(**kwargs)
+            return jsonify(url=sess.url)
+        except Exception as e:
+            return jsonify(error=f"Could not start checkout: {e}"), 500
+
+    @app.post("/api/billing/services/getpaid/cancel")
+    @login_required
+    def getpaid_cancel():
+        """Cancel the Get-Paid subscription at period end via Stripe, then mark
+        the company_services row canceled."""
+        if not getpaid_configured():
+            return jsonify(error="billing_not_configured"), 503
+        db = get_db()
+        try:
+            row = db.execute(
+                "SELECT stripe_subscription_id FROM company_services"
+                " WHERE company_id=? AND service_key='getpaid'",
+                (g.user["id"],)).fetchone()
+        finally:
+            db.close()
+        if not row or not row["stripe_subscription_id"]:
+            return jsonify(error="No Get-Paid subscription found."), 404
+        stripe.api_key = STRIPE_SECRET_KEY
+        try:
+            stripe.Subscription.modify(
+                row["stripe_subscription_id"], cancel_at_period_end=True)
+        except Exception as e:
+            return jsonify(error=f"Could not cancel: {e}"), 500
+        upsert_company_service(g.user["id"], "getpaid", status="canceled")
+        return jsonify(ok=True)
