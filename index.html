@@ -1319,6 +1319,11 @@
       renderNav();
       renderLoggedInView();
       return authUser;
+    }).catch(function(){
+      authUser = null;
+      try { renderNav(); } catch(e) {}
+      try { renderLoggedInView(); } catch(e) {}
+      return null;
     });
   }
 
@@ -1742,7 +1747,7 @@
       '<button id="gp-upsell-subscribe" class="btn-primary px-8 py-3.5 text-lg mt-4">Subscribe — $99/mo</button>'+
       '<p id="gp-upsell-msg" class="text-sm text-red-700 mt-3"></p>'+
       '<p class="text-sm text-slate-500 mt-3">Need the Tabulator too? <strong>GC Suite</strong> — both products for '+
-      '<strong>$179/mo</strong> (save $49/mo vs separate). <a href="#" id="gp-upsell-suite-link" class="underline font-semibold" style="color:var(--orange)">See billing options</a></p>'+
+      '<strong>$179/mo</strong> (save $49/mo vs separate). <button id="gp-upsell-suite-link" class="underline font-semibold" style="color:var(--orange)">See billing options</button></p>'+
       '<p class="text-xs text-slate-400 mt-2">Billed separately from your Tabulator subscription. Cancel anytime.</p>'+
       '</div>';
   }
@@ -2266,13 +2271,24 @@
       el.querySelectorAll("[data-svc-sub]").forEach(function(btn){
         btn.addEventListener("click", function(){
           btn.disabled = true;
-          $("gp-billing-msg").textContent = "";
+          var card = btn.closest("div.flex.items-center") || btn.parentElement;
+          var msgEl = card ? card.querySelector(".svc-msg") : null;
+          if (!msgEl && card){
+            msgEl = document.createElement("p");
+            msgEl.className = "svc-msg text-sm mt-2 w-full";
+            card.appendChild(msgEl);
+          }
+          var showMsg = function(text, color){
+            if (msgEl){ msgEl.textContent = text; msgEl.style.color = color; }
+            var gm = $("gp-billing-msg");
+            if (gm){ gm.textContent = text; gm.style.color = color; }
+          };
+          showMsg("", "");
           svcSubscribeFlow(btn.getAttribute("data-svc-sub"), btn.getAttribute("data-interval")).catch(function(e){
             btn.disabled = false;
-            $("gp-billing-msg").textContent = e.message==="billing_not_configured"
+            showMsg(e.message==="billing_not_configured"
               ? "Billing isn\u2019t configured on this account yet — check back soon."
-              : e.message;
-            $("gp-billing-msg").style.color = "red";
+              : ("Subscribe failed: " + e.message), "red");
           });
         });
       });
