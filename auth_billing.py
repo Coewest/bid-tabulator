@@ -36,7 +36,8 @@ DB_PATH = os.environ.get("TABULATOR_DB", os.path.join(
 STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "")
 STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
-STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID", "")  # $49/mo recurring price
+STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID", "")  # $129/mo recurring price
+STRIPE_PRICE_ID_ANNUAL = os.environ.get("STRIPE_PRICE_ID_ANNUAL", "")  # $1,290/yr recurring price
 APP_URL = os.environ.get("APP_URL", "https://bid-tabulator-production.up.railway.app").rstrip("/")
 
 FREE_TABULATIONS = 1
@@ -84,6 +85,10 @@ def init_db():
     for col in ("company_name", "contact_name", "phone"):
         if col not in cols:
             db.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    # Migration: subscription billing interval (month/year)
+    scols = [r[1] for r in db.execute("PRAGMA table_info(subscriptions)")]
+    if "billing_interval" not in scols:
+        db.execute("ALTER TABLE subscriptions ADD COLUMN billing_interval TEXT NOT NULL DEFAULT 'month'")
     db.commit()
     db.close()
 
@@ -387,11 +392,15 @@ def register_routes(app):
             paying = db.execute(
                 "SELECT COUNT(*) c FROM subscriptions WHERE status IN ('active','trialing','past_due')"
             ).fetchone()["c"]
+            annual = db.execute(
+                "SELECT COUNT(*) c FROM subscriptions WHERE status IN ('active','trialing','past_due') AND billing_interval='year'"
+            ).fetchone()["c"]
+            monthly = paying - annual
             return jsonify(stats={
                 "total_users": total_users,
                 "total_tabulations": total_tabs,
                 "paying_customers": paying,
-                "mrr": paying * 49,
+                "mrr": monthly * 129 + annual * 1290 // 12,
             })
         finally:
             db.close()
@@ -414,6 +423,9 @@ def register_routes(app):
     def stripe_checkout():
         if not stripe_configured():
             return jsonify(error="Billing is not configured yet. Please check back soon."), 503
+        body = request.get_json(force=True, silent=True) or {}
+        interval = (body.get("interval") or "month").lower()
+        price_id = STRIPE_PRICE_ID_ANNUAL if interval == "year" and STRIPE_PRICE_ID_ANNUAL else STRIPE_PRICE_ID
         stripe.api_key = STRIPE_SECRET_KEY
         db = get_db()
         try:
@@ -425,10 +437,10 @@ def register_routes(app):
         try:
             kwargs = {
                 "mode": "subscription",
-                "line_items": [{"price": STRIPE_PRICE_ID, "quantity": 1}],
+                "line_items": [{"price": price_id, "quantity": 1}],
                 "success_url": f"{APP_URL}/?billing=success",
                 "cancel_url": f"{APP_URL}/?billing=cancelled",
-                "metadata": {"user_id": str(g.user["id"])},
+                "metadata": {"user_id": str(g.user["id"]), "interval": interval},
             }
             if customer_id:
                 kwargs["customer"] = customer_id
@@ -475,21 +487,22 @@ def register_routes(app):
         etype = event["type"]
         obj = event["data"]["object"]
 
-        def upsert(user_id, customer_id, sub_id, status, period_end):
+        def upsert(user_id, customer_id, sub_id, status, period_end, billing_interval="month"):
             db = get_db()
             try:
                 db.execute(
                     """INSERT INTO subscriptions
                        (user_id, stripe_customer_id, stripe_subscription_id, status,
-                        current_period_end, updated_at)
-                       VALUES (?,?,?,?,?,?)
+                        current_period_end, billing_interval, updated_at)
+                       VALUES (?,?,?,?,?,?,?)
                        ON CONFLICT(user_id) DO UPDATE SET
                          stripe_customer_id=excluded.stripe_customer_id,
                          stripe_subscription_id=excluded.stripe_subscription_id,
                          status=excluded.status,
                          current_period_end=excluded.current_period_end,
+                         billing_interval=excluded.billing_interval,
                          updated_at=excluded.updated_at""",
-                    (user_id, customer_id, sub_id, status, period_end, int(time.time())))
+                    (user_id, customer_id, sub_id, status, period_end, billing_interval, int(time.time())))
                 db.commit()
             finally:
                 db.close()
@@ -499,13 +512,22 @@ def register_routes(app):
             uid = int((sess.get("metadata") or {}).get("user_id") or 0)
             customer_id = sess.get("customer")
             sub_id = sess.get("subscription")
+            interval = (sess.get("metadata") or {}).get("interval") or "month"
             if uid and sub_id:
                 sub = stripe.Subscription.retrieve(sub_id)
                 upsert(uid, customer_id, sub_id, sub["status"],
-                       sub.get("current_period_end"))
+                       sub.get("current_period_end"), interval)
         elif etype in ("customer.subscription.updated", "customer.subscription.deleted"):
             sub = obj
             customer_id = sub.get("customer")
+            # derive interval from the subscription's price
+            interval = "month"
+            try:
+                items = (sub.get("items") or {}).get("data") or []
+                if items:
+                    interval = ((items[0].get("price") or {}).get("recurring") or {}).get("interval") or "month"
+            except Exception:
+                pass
             # find user by customer id
             db = get_db()
             try:
@@ -515,7 +537,7 @@ def register_routes(app):
                 db.close()
             if row:
                 upsert(row["user_id"], customer_id, sub["id"], sub["status"],
-                       sub.get("current_period_end"))
+                       sub.get("current_period_end"), interval)
         elif etype == "invoice.payment_failed":
             # keep status as-is; Stripe retries. Mark past_due via subscription.updated.
             pass
