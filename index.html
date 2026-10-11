@@ -69,6 +69,13 @@
   .spinner { border:3px solid #e5e7eb; border-top-color:var(--orange);
     border-radius:50%; width:40px; height:40px; animation:spin 0.8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
+  /* Mobile fixes (Coe 2026-10-10) */
+  @media (max-width: 640px) {
+    #nav-auth .nav-email { display: none; }
+    #nav-auth { gap: 0.75rem; }
+    #dash-tabs { flex-wrap: wrap; }
+    #dash-tabs .dash-tab { flex: 1 1 auto; min-width: 100px; text-align: center; }
+  }
 </style>
 </head>
 <body class="bg-slate-50 text-slate-900">
@@ -1224,7 +1231,7 @@
       var sub = authUser.subscription === "active"
         ? '<span class="text-green-400 font-semibold">● Subscribed</span>'
         : '<button id="nav-subscribe" class="underline" style="color:#f58b53">Subscribe $129/mo</button>';
-      el.innerHTML = '<button id="nav-dash" class="hover:underline">'+escapeHtml(authUser.email)+'</button>'+
+      el.innerHTML = '<button id="nav-dash" class="hover:underline nav-email">'+escapeHtml(authUser.email)+'</button>'+
         sub +
         '<button id="nav-logout" class="text-slate-400 hover:underline">Log out</button>';
       $("nav-dash").addEventListener("click", showDashboard);
