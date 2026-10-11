@@ -1514,6 +1514,25 @@ def admin_tracking():
         db.close()
 
 
+@app.route("/api/admin/tracking/reset", methods=["POST"])
+def admin_tracking_reset():
+    """Admin-only: delete all tracked page views (reset counters to zero)."""
+    try:
+        from auth_billing import get_current_user, get_db
+        user = get_current_user()
+        if not user or not user.get("is_admin"):
+            return jsonify(error="Admin required"), 403
+    except Exception:
+        return jsonify(error="Admin required"), 403
+    db = get_db()
+    try:
+        db.execute("DELETE FROM page_views")
+        db.commit()
+        return jsonify(ok=True)
+    finally:
+        db.close()
+
+
 def _do_upload():
     """Core parsing logic. Returns a Flask response. Wrapped by upload() for gating."""
     files = request.files.getlist("files")
