@@ -232,7 +232,7 @@
       <h2 class="text-2xl md:text-3xl font-bold text-white text-center">Why pay 3x more for the same job?</h2>
       <p class="text-center mt-2" style="color:#b9cbd6">Bid tabulation pricing, per company per month. Tabulator includes unlimited users.</p>
       <div class="mt-6 overflow-x-auto">
-        <table class="w-full text-sm" style="min-width:500px">
+        <table class="w-full text-sm competitor-table">
           <thead>
             <tr class="text-left" style="color:#b9cbd6">
               <th class="py-3 pr-4 font-semibold">Tool</th>
@@ -278,6 +278,16 @@
             </tr>
           </tbody>
         </table>
+        <style>
+          @media (max-width: 640px) {
+            .competitor-table thead { display: none; }
+            .competitor-table, .competitor-table tbody, .competitor-table tr, .competitor-table td { display: block; width: 100%; }
+            .competitor-table tr { padding: 12px 0; }
+            .competitor-table td { padding: 2px 0 !important; text-align: left !important; border: none !important; }
+            .competitor-table td:nth-child(2)::before { content: "Price: "; color: #b9cbd6; font-weight: 600; }
+            .competitor-table td:nth-child(3)::before { content: "vs Tabulator: "; color: #b9cbd6; font-weight: 600; }
+          }
+        </style>
       </div>
       <p class="text-center text-xs mt-4" style="color:#8a9ba8">Competitor prices from public listings, Oct 2026. Per-user tools cost more with every seat — Tabulator is flat $129 for your whole company.</p>
     </div>
