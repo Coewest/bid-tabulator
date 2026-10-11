@@ -69,6 +69,38 @@
   .spinner { border:3px solid #e5e7eb; border-top-color:var(--orange);
     border-radius:50%; width:40px; height:40px; animation:spin 0.8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
+  /* Get-Paid suite (Coe 2026-10-11) */
+  .gp-card { background:#fff; border:1px solid #e2e8f0; border-radius:12px; }
+  .gp-input { border:1px solid #cbd5e1; border-radius:8px; padding:8px 10px; font-size:14px; }
+  .gp-input:focus { border-color:var(--orange); box-shadow:0 0 0 3px rgba(229,106,43,.2); outline:none; }
+  .gp-label { font-size:11px; font-weight:700; color:#64748b; text-transform:uppercase; letter-spacing:.04em; }
+  .gp-pill { font-size:11px; font-weight:700; padding:2px 10px; border-radius:9999px; white-space:nowrap; }
+  .gp-pill-pending { background:#fef3e2; color:#92400e; }
+  .gp-pill-sent { background:#e0f2fe; color:#0369a1; }
+  .gp-pill-signed { background:#e5f4eb; color:#26734d; }
+  .gp-pill-draft { background:#f1f5f9; color:#64748b; }
+  .gp-pill-submitted { background:#e0f2fe; color:#0369a1; }
+  .gp-pill-paid { background:#e5f4eb; color:#26734d; }
+  .gp-tbl th { text-align:left; font-size:11px; font-weight:700; color:#64748b; text-transform:uppercase;
+    letter-spacing:.04em; padding:8px 10px; border-bottom:2px solid #e2e8f0; }
+  .gp-tbl td { padding:8px 10px; border-bottom:1px solid #f1f5f9; vertical-align:middle; }
+  .gp-tbl tr:last-child td { border-bottom:none; }
+  @media (max-width: 640px) {
+    .gp-tbl thead { display:none; }
+    .gp-tbl, .gp-tbl tbody, .gp-tbl tr, .gp-tbl td { display:block; width:100%; }
+    .gp-tbl tr { border:1px solid #e2e8f0; border-radius:10px; margin-bottom:10px; padding:6px 4px; }
+    .gp-tbl td { border-bottom:none; padding:6px 10px; }
+    .gp-tbl td::before { content:attr(data-l); display:block; font-size:10px; font-weight:700;
+      color:#64748b; text-transform:uppercase; letter-spacing:.04em; margin-bottom:2px; }
+    .gp-tbl td.no-lbl::before { content:none; }
+  }
+  /* Print: only the pay-app root is visible */
+  #gp-print-root { display:none; }
+  @media print {
+    body.gp-printing > *:not(#gp-print-root) { display:none !important; }
+    body.gp-printing #gp-print-root { display:block !important; }
+    body.gp-printing { background:#fff !important; }
+  }
   /* Mobile fixes (Coe 2026-10-10) */
   @media (max-width: 640px) {
     #nav-auth .nav-email { display: none; }
@@ -106,6 +138,7 @@
     </p>
     <div class="mt-8 flex flex-wrap items-center gap-4">
       <a href="#app" class="btn-primary px-7 py-3.5 text-lg inline-block">Upload bids — try it free</a>
+      <button id="gp-demo-btn" class="px-7 py-3.5 text-lg font-bold rounded-lg border-2 text-white hover:bg-white/10" style="border-color:rgba(255,255,255,.35)">Try the Get-Paid demo</button>
       <span class="text-sm" style="color:#9fb3c1">First bid package free. $129/mo after that. No credit card.</span>
     </div>
   </div>
@@ -312,6 +345,7 @@
     <h2 class="text-2xl font-bold" style="color:var(--navy)">Dashboard</h2>
     <div class="flex gap-2 text-sm font-semibold" id="dash-tabs">
       <button data-dtab="tabs" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">My tabulations</button>
+      <button data-dtab="getpaid" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">Get-Paid</button>
       <button data-dtab="settings" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">Settings</button>
       <button data-dtab="admin" id="dash-tab-admin" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200 hidden">Admin</button>
 
@@ -325,6 +359,11 @@
       <button id="new-tab-btn" class="btn-primary px-5 py-2.5 text-sm">+ New tabulation</button>
     </div>
     <div id="tab-list" class="mt-5 space-y-2"></div>
+  </div>
+
+  <!-- Get-Paid tab -->
+  <div id="dtab-getpaid" class="mt-5 hidden">
+    <div id="gp-app"></div>
   </div>
 
   <!-- Settings tab -->
@@ -358,6 +397,14 @@
         <button id="billing-portal" class="px-5 py-2.5 text-sm font-semibold border border-slate-300 rounded-lg hidden">Manage billing</button>
       </div>
       <p id="billing-msg" class="text-sm text-red-700 mt-3"></p>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
+      <h3 class="text-xl font-bold" style="color:var(--navy)">Billing services</h3>
+      <p class="text-sm text-slate-500 mt-1">Each ClearScope service on this company account is billed separately.</p>
+      <div id="billing-services" class="mt-4 space-y-3">
+        <p class="text-sm text-slate-400">Loading services…</p>
+      </div>
+      <p id="gp-billing-msg" class="text-sm mt-2"></p>
     </div>
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
       <h3 class="text-xl font-bold" style="color:var(--navy)">Change password</h3>
@@ -408,6 +455,23 @@
     </div>
   </div>
 </section>
+
+<!-- ============ PUBLIC WAIVER SIGNING (/w/<token>) — no login required ============ -->
+<section id="waiver-signing" class="hidden">
+  <div class="max-w-2xl mx-auto px-5 py-12">
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8" id="waiver-card">
+      <div class="text-center py-8"><div class="spinner mx-auto"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ GET-PAID INTERACTIVE DEMO (no login, hardcoded data) ============ -->
+<section id="gp-demo" class="hidden">
+  <div class="max-w-6xl mx-auto px-5 py-10" id="gp-demo-body"></div>
+</section>
+
+<!-- ============ PAY-APP PRINT ROOT (visible only during window.print) ============ -->
+<div id="gp-print-root"></div>
 
 <!-- ============ AUTH MODAL ============ -->
 <div id="auth-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1258,6 +1322,7 @@
 
   // Logged-in users see the dashboard instead of the landing page.
   function renderLoggedInView(){
+    if (waiverToken){ enterWaiverMode(); return; }  // /w/<token> public signing page
     var loggedIn = !!authUser;
     ["hero","landing-how","landing-cta","landing-competitors"].forEach(function(id){
       var el = $(id); if (el) el.classList.toggle("hidden", loggedIn);
@@ -1270,6 +1335,7 @@
       switchDashTab("tabs");
       loadTabulationList();
       loadSettings();
+      loadBillingServices();
       if (authUser.is_admin) loadAdmin();
     } else {
       hide("dashboard-section");
@@ -1278,12 +1344,13 @@
   }
 
   function switchDashTab(name){
-    ["tabs","settings","admin"].forEach(function(t){
+    ["tabs","getpaid","settings","admin"].forEach(function(t){
       $("dtab-"+t).classList.toggle("hidden", t!==name);
     });
     document.querySelectorAll(".dash-tab").forEach(function(b){
       b.classList.toggle("active", b.dataset.dtab===name);
     });
+    if (name==="getpaid") loadGetPaid();
   }
   document.querySelectorAll(".dash-tab").forEach(function(b){
     b.addEventListener("click", function(){ switchDashTab(b.dataset.dtab); });
@@ -1576,6 +1643,850 @@
       history.replaceState(null,"",location.pathname);
     }
   })();
+
+  /* ================= GET-PAID SUITE (Coe 2026-10-11) ================= */
+  var waiverToken = (function(){
+    var m = window.location.pathname.match(/^\/w\/([A-Za-z0-9_-]+)\/?$/);
+    return m ? m[1] : null;
+  })();
+
+  var gp = { view:"projects", projects:[], project:null, projectDraws:[], draw:null, subscribed:null };
+  var GP_KIND_LABEL = {conditional:"Conditional", unconditional:"Unconditional"};
+  var GP_SCOPE_LABEL = {progress:"Progress", final:"Final"};
+
+  function gpMoney(n){
+    if (n==null || !isFinite(Number(n))) return "—";
+    var v = Math.round(Number(n));
+    return (v<0 ? "−$" : "$") + Math.abs(v).toLocaleString("en-US");
+  }
+  function gpPill(status){
+    var map = {pending:"gp-pill-pending", sent:"gp-pill-sent", signed:"gp-pill-signed",
+               draft:"gp-pill-draft", submitted:"gp-pill-submitted", paid:"gp-pill-paid"};
+    var cls = map[status] || "gp-pill-draft";
+    var label = status ? status.charAt(0).toUpperCase()+status.slice(1) : "—";
+    return '<span class="gp-pill '+cls+'">'+escapeHtml(label)+'</span>';
+  }
+  function gpKindLabel(k){ return GP_KIND_LABEL[k] || (k||"—"); }
+  function gpScopeLabel(s){ return GP_SCOPE_LABEL[s] || (s||"—"); }
+  function gpDate(s){
+    if (!s) return "—";
+    var d = new Date(String(s).length<=10 ? String(s)+"T12:00:00" : s);
+    return isNaN(d) ? String(s) : d.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+  }
+  function gpGate(res){
+    // 402 subscription_required → show the upsell instead of an error
+    if (!res.ok && res.status===402 && res.body && res.body.error==="subscription_required"){
+      gp.subscribed = false; gp.view = "projects"; gp.project = null; gp.draw = null;
+      gpRender();
+      return true;
+    }
+    return false;
+  }
+  function gpErr(e){
+    return '<div class="gp-card p-8 text-sm text-red-700">Couldn\u2019t load Get-Paid: '+
+      escapeHtml((e&&e.message)||"error")+'</div>';
+  }
+  function gpReloadDraw(){
+    var y = window.scrollY;
+    var D = (gp.draw && gp.draw.draw) || {};
+    if (!D.id) return;
+    api("/api/getpaid/draws/"+D.id).then(function(res){
+      if (gpGate(res)) return;
+      if (!res.ok) throw new Error(res.body.error||"Could not reload draw");
+      gp.draw = res.body; gpRender();
+      window.scrollTo(0, y);
+    }).catch(function(e){ alert("Could not reload draw: "+e.message); });
+  }
+
+  /* ---------- entry ---------- */
+  function loadGetPaid(){
+    gp.view = "projects"; gp.projects = []; gp.project = null; gp.draw = null;
+    $("gp-app").innerHTML = '<div class="gp-card p-10 text-center"><div class="spinner mx-auto"></div>'+
+      '<p class="mt-3 text-sm text-slate-500">Loading Get-Paid…</p></div>';
+    api("/api/getpaid/projects").then(function(res){
+      if (gpGate(res)) return;
+      if (!res.ok) throw new Error(res.body.error||"Could not load projects");
+      gp.subscribed = true;
+      gp.projects = Array.isArray(res.body) ? res.body : (res.body.projects||[]);
+      gpRender();
+    }).catch(function(e){ $("gp-app").innerHTML = gpErr(e); });
+  }
+
+  function gpRender(){
+    var el = $("gp-app");
+    if (!el) return;
+    el.onclick = null;  // drop stale draw-view delegation before re-render
+    if (gp.subscribed===false){ el.innerHTML = gpUpsellHtml(); gpWireUpsell(); return; }
+    if (gp.view==="draw" && gp.draw){ el.innerHTML = gpDrawHtml(); gpWireDraw(); return; }
+    if (gp.view==="project" && gp.project){ el.innerHTML = gpProjectHtml(); gpWireProject(); return; }
+    el.innerHTML = gpProjectsHtml(); gpWireProjects();
+  }
+
+  /* ---------- upsell (not subscribed) ---------- */
+  function gpUpsellHtml(){
+    return '<div class="gp-card p-8 md:p-10 text-center">'+
+      '<div class="text-4xl mb-3">💰</div>'+
+      '<h3 class="text-2xl font-bold" style="color:var(--navy)">Get-Paid suite</h3>'+
+      '<p class="text-slate-500 mt-2 max-w-xl mx-auto">Turn every draw into a clean pay application: '+
+      'a schedule of values with per-line % complete, automatic retainage math, printable '+
+      'G702/G703-style pay apps, and lien waiver tracking with one-tap signing links for every sub.</p>'+
+      '<ul class="text-left text-sm text-slate-600 max-w-md mx-auto mt-5 space-y-2">'+
+      '<li>✓ Schedule of values with per-line % complete</li>'+
+      '<li>✓ Automatic totals: earned to date, retainage, amount due</li>'+
+      '<li>✓ Printable pay applications</li>'+
+      '<li>✓ Lien waiver dashboard — see who\u2019s holding up the draw</li>'+
+      '<li>✓ Sub signing links, no login required for subs</li></ul>'+
+      '<div class="mt-6 text-4xl font-bold" style="color:var(--navy)">$99<span class="text-base font-semibold text-slate-500">/month</span></div>'+
+      '<button id="gp-upsell-subscribe" class="btn-primary px-8 py-3.5 text-lg mt-4">Subscribe — $99/mo</button>'+
+      '<p id="gp-upsell-msg" class="text-sm text-red-700 mt-3"></p>'+
+      '<p class="text-xs text-slate-400 mt-2">Billed separately from your Tabulator subscription. Cancel anytime.</p>'+
+      '</div>';
+  }
+  function gpSubscribeFlow(){
+    return api("/api/billing/services/getpaid/subscribe",{method:"POST"}).then(function(res){
+      if (!res.ok){
+        if (res.body && res.body.error==="billing_not_configured") throw new Error("billing_not_configured");
+        throw new Error(res.body.error||"Subscribe failed");
+      }
+      window.location.href = res.body.url;
+    });
+  }
+  function gpWireUpsell(){
+    $("gp-upsell-subscribe").addEventListener("click", function(){
+      var btn = this;
+      btn.disabled = true; btn.textContent = "Starting checkout…";
+      $("gp-upsell-msg").textContent = "";
+      gpSubscribeFlow().catch(function(e){
+        btn.disabled = false; btn.textContent = "Subscribe — $99/mo";
+        $("gp-upsell-msg").textContent = e.message==="billing_not_configured"
+          ? "Billing isn\u2019t configured on this account yet — check back soon."
+          : e.message;
+      });
+    });
+  }
+
+  /* ---------- project list ---------- */
+  function gpProjectsHtml(){
+    var list = gp.projects.length ? gp.projects.map(function(p){
+      return '<button data-gp-project="'+p.id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
+        '<span><span class="font-semibold block">'+escapeHtml(p.name)+'</span>'+
+        (p.client_name?'<span class="text-sm text-slate-400">'+escapeHtml(p.client_name)+'</span>':"")+'</span>'+
+        '<span class="text-sm text-slate-400">→</span></button>';
+    }).join("") : '<p class="text-slate-500">No projects yet — add your first one below.</p>';
+    return '<div class="gp-card p-6 md:p-8">'+
+      '<div class="flex items-center justify-between flex-wrap gap-3">'+
+      '<div><h3 class="text-xl font-bold" style="color:var(--navy)">Get-Paid projects</h3>'+
+      '<p class="text-sm text-slate-500 mt-1">Pay applications, schedule of values, and lien waivers.</p></div></div>'+
+      '<div class="mt-5 space-y-2">'+list+'</div>'+
+      '<div class="mt-6 border-t border-slate-200 pt-5">'+
+      '<h4 class="font-bold" style="color:var(--navy)">New project</h4>'+
+      '<div class="grid md:grid-cols-3 gap-3 mt-3">'+
+      '<input id="gp-np-name" type="text" class="gp-input" placeholder="Project name" />'+
+      '<input id="gp-np-client" type="text" class="gp-input" placeholder="Client name" />'+
+      '<button id="gp-new-project" class="btn-primary px-5 py-2.5 text-sm">+ Add project</button>'+
+      '</div></div></div>';
+  }
+  function gpWireProjects(){
+    Array.prototype.forEach.call(document.querySelectorAll("[data-gp-project]"), function(b){
+      b.addEventListener("click", function(){ loadGpProject(Number(b.dataset.gpProject)); });
+    });
+    $("gp-new-project").addEventListener("click", function(){
+      var name = $("gp-np-name").value.trim(), client = $("gp-np-client").value.trim();
+      if (!name){ alert("Enter a project name."); return; }
+      api("/api/getpaid/projects",{method:"POST",
+        body:JSON.stringify({name:name, client_name:client})}).then(function(res){
+        if (gpGate(res)) return;
+        if (!res.ok) throw new Error(res.body.error||"Create failed");
+        loadGetPaid();
+      }).catch(function(e){ alert(e.message); });
+    });
+  }
+
+  /* ---------- project detail (draws) ---------- */
+  function loadGpProject(id){
+    api("/api/getpaid/projects/"+id).then(function(res){
+      if (gpGate(res)) return;
+      if (!res.ok) throw new Error(res.body.error||"Could not load project");
+      gp.project = res.body.project || res.body;
+      gp.projectDraws = gp.project.draws || res.body.draws || [];
+      gp.view = "project";
+      gpRender();
+    }).catch(function(e){ $("gp-app").innerHTML = gpErr(e); });
+  }
+  function gpProjectHtml(){
+    var p = gp.project;
+    var draws = gp.projectDraws.map(function(d){
+      return '<button data-gp-draw="'+d.id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
+        '<span><span class="font-semibold">Draw #'+escapeHtml(String(d.draw_number!=null?d.draw_number:"—"))+'</span> '+
+        gpPill(d.status)+
+        '<span class="text-sm text-slate-400 block">'+gpDate(d.period_start)+' – '+gpDate(d.period_end)+'</span></span>'+
+        '<span class="text-sm text-slate-400">→</span></button>';
+    }).join("") || '<p class="text-slate-500">No draws yet — add the first one below.</p>';
+    return '<button id="gp-back-projects" class="text-sm font-semibold text-slate-500 hover:underline">← All projects</button>'+
+      '<div class="gp-card p-6 mt-3">'+
+      '<h3 class="text-xl font-bold" style="color:var(--navy)">Project settings</h3>'+
+      '<div class="grid md:grid-cols-2 gap-4 mt-4">'+
+      '<label class="block"><span class="gp-label">Project name</span>'+
+      '<input id="gp-p-name" type="text" class="gp-input w-full mt-1" value="'+escapeHtml(p.name||"")+'" /></label>'+
+      '<label class="block"><span class="gp-label">Client</span>'+
+      '<input id="gp-p-client" type="text" class="gp-input w-full mt-1" value="'+escapeHtml(p.client_name||"")+'" /></label>'+
+      '</div>'+
+      '<div class="mt-4 flex items-center gap-3 flex-wrap">'+
+      '<button id="gp-p-save" class="btn-primary px-5 py-2.5 text-sm">Save</button>'+
+      '<button id="gp-p-delete" class="px-4 py-2.5 text-sm font-semibold text-red-600 border border-red-200 rounded-lg">Delete project</button>'+
+      '<span id="gp-p-msg" class="text-sm"></span></div></div>'+
+      '<div class="gp-card p-6 mt-4">'+
+      '<h4 class="font-bold text-lg" style="color:var(--navy)">Draws</h4>'+
+      '<div class="mt-4 space-y-2">'+draws+'</div>'+
+      '<details class="mt-5 border-t border-slate-200 pt-4">'+
+      '<summary class="font-bold cursor-pointer text-sm" style="color:var(--navy)">+ New draw</summary>'+
+      '<div class="grid md:grid-cols-3 gap-3 mt-4">'+
+      '<label class="block"><span class="gp-label">Draw #</span><input id="gp-nd-num" type="number" min="1" class="gp-input w-full mt-1" value="'+(gp.projectDraws.length+1)+'" /></label>'+
+      '<label class="block"><span class="gp-label">Period start</span><input id="gp-nd-start" type="date" class="gp-input w-full mt-1" /></label>'+
+      '<label class="block"><span class="gp-label">Period end</span><input id="gp-nd-end" type="date" class="gp-input w-full mt-1" /></label>'+
+      '<label class="block"><span class="gp-label">Retainage %</span><input id="gp-nd-ret" type="number" min="0" max="100" class="gp-input w-full mt-1" value="10" /></label>'+
+      '<label class="block md:col-span-2"><span class="gp-label">Notes</span><input id="gp-nd-notes" type="text" class="gp-input w-full mt-1" placeholder="Optional" /></label>'+
+      '</div>'+
+      '<button id="gp-new-draw" class="btn-primary px-5 py-2.5 text-sm mt-4">Add draw</button>'+
+      '</details></div>';
+  }
+  function gpWireProject(){
+    $("gp-back-projects").addEventListener("click", loadGetPaid);
+    $("gp-p-save").addEventListener("click", function(){
+      var msg = $("gp-p-msg"); msg.textContent = "";
+      api("/api/getpaid/projects/"+gp.project.id,{method:"PUT",
+        body:JSON.stringify({name:$("gp-p-name").value.trim(), client_name:$("gp-p-client").value.trim()})})
+        .then(function(res){
+          if (gpGate(res)) return;
+          if (!res.ok) throw new Error(res.body.error||"Save failed");
+          msg.style.color = "green"; msg.textContent = "Saved.";
+        }).catch(function(e){ msg.style.color = "red"; msg.textContent = e.message; });
+    });
+    $("gp-p-delete").addEventListener("click", function(){
+      if (!confirm("Delete this project and all its draws, lines, and waivers?")) return;
+      api("/api/getpaid/projects/"+gp.project.id,{method:"DELETE"}).then(function(res){
+        if (gpGate(res)) return;
+        if (!res.ok) throw new Error(res.body.error||"Delete failed");
+        loadGetPaid();
+      }).catch(function(e){ alert(e.message); });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-gp-draw]"), function(b){
+      b.addEventListener("click", function(){ loadGpDraw(Number(b.dataset.gpDraw)); });
+    });
+    $("gp-new-draw").addEventListener("click", function(){
+      var payload = {draw_number:Number($("gp-nd-num").value)||(gp.projectDraws.length+1),
+        period_start:$("gp-nd-start").value||null, period_end:$("gp-nd-end").value||null,
+        retainage_pct:Number($("gp-nd-ret").value)||0, notes:$("gp-nd-notes").value.trim()};
+      api("/api/getpaid/projects/"+gp.project.id+"/draws",{method:"POST",
+        body:JSON.stringify(payload)}).then(function(res){
+        if (gpGate(res)) return;
+        if (!res.ok) throw new Error(res.body.error||"Create failed");
+        loadGpProject(gp.project.id);
+      }).catch(function(e){ alert(e.message); });
+    });
+  }
+
+  /* ---------- draw editor ---------- */
+  function loadGpDraw(id){
+    api("/api/getpaid/draws/"+id).then(function(res){
+      if (gpGate(res)) return;
+      if (!res.ok) throw new Error(res.body.error||"Could not load draw");
+      gp.draw = res.body;
+      gp.view = "draw";
+      gpRender();
+      window.scrollTo({top:0, behavior:"smooth"});
+    }).catch(function(e){ $("gp-app").innerHTML = gpErr(e); });
+  }
+  function gpTotalsHtml(t){
+    var cards = [
+      ["Contract total", t.scheduled_total],
+      ["Earned to date", t.earned_to_date],
+      ["Less retainage", t.retained_to_date],
+      ["Amount due this draw", t.due_this_draw]
+    ];
+    return '<div class="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">'+cards.map(function(c){
+      return '<div class="rounded-lg bg-slate-50 border border-slate-200 p-4">'+
+        '<div class="text-xs font-bold text-slate-500 uppercase tracking-wide">'+c[0]+'</div>'+
+        '<div class="text-2xl font-bold mono mt-1" style="color:var(--navy)">'+gpMoney(c[1])+'</div></div>';
+    }).join("")+'</div>';
+  }
+  function gpWaiverDashHtml(waivers){
+    waivers = waivers||[];
+    var signed = waivers.filter(function(w){return w.status==="signed";}).length;
+    var holding = waivers.filter(function(w){return w.status!=="signed";});
+    var pct = waivers.length ? Math.round(signed/waivers.length*100) : 0;
+    var holdHtml = holding.length
+      ? '<div class="mt-3 text-sm"><span class="font-bold text-red-700">Holding up the draw: </span>'+
+        holding.map(function(w){
+          return '<span class="font-semibold">'+escapeHtml(w.sub_name)+'</span> '+gpPill(w.status);
+        }).join('<span class="text-slate-300 mx-1">·</span>')+'</div>'
+      : '<div class="mt-3 text-sm font-semibold text-green-700">All waivers signed — nothing holding up the draw.</div>';
+    return '<div id="gp-waiver-dashboard" class="gp-card p-6 mt-4">'+
+      '<div class="flex items-center justify-between flex-wrap gap-2">'+
+      '<h4 class="font-bold text-lg" style="color:var(--navy)">Lien waiver status</h4>'+
+      '<span class="text-sm font-bold">'+signed+' of '+waivers.length+' signed</span></div>'+
+      '<div class="mt-3 h-2.5 rounded-full bg-slate-100 overflow-hidden">'+
+      '<div class="h-full rounded-full" style="width:'+pct+'%;background:var(--orange)"></div></div>'+
+      holdHtml+'</div>';
+  }
+  function gpDrawHtml(){
+    var D = (gp.draw && gp.draw.draw) || {};
+    var lines = gp.draw.lines || [];
+    var waivers = gp.draw.waivers || [];
+    var totals = gp.draw.totals || {};
+    var projName = (gp.project && gp.project.name) || "Project";
+    var lineRows = lines.map(function(l){
+      var earned = (l.scheduled_value||0)*(l.pct_complete||0)/100;
+      return '<tr data-lid="'+l.id+'">'+
+        '<td data-l="Description"><input type="text" data-f="description" value="'+escapeHtml(l.description||"")+'" class="gp-input w-full" /></td>'+
+        '<td data-l="Scheduled value"><input type="number" min="0" step="100" data-f="scheduled_value" value="'+(l.scheduled_value||0)+'" class="gp-input w-32 text-right mono" /></td>'+
+        '<td data-l="% complete"><div class="flex items-center gap-1"><input type="number" min="0" max="100" step="1" data-f="pct_complete" value="'+(l.pct_complete||0)+'" class="gp-input w-20 text-right mono" /><span class="text-slate-400 text-sm">%</span></div></td>'+
+        '<td data-l="Earned" class="text-right mono font-semibold">'+gpMoney(earned)+'</td>'+
+        '<td data-l="" class="no-lbl text-right"><button data-delline="'+l.id+'" class="text-red-500 text-sm font-semibold hover:underline">Delete</button></td>'+
+        '</tr>';
+    }).join("") || '<tr><td colspan="5" class="text-center text-slate-400 py-6">No lines yet — add the first one below.</td></tr>';
+    var waiverRows = waivers.map(function(w){
+      return '<tr>'+
+        '<td data-l="Subcontractor"><div class="font-semibold">'+escapeHtml(w.sub_name)+'</div>'+
+        (w.sub_email?'<div class="text-xs text-slate-400">'+escapeHtml(w.sub_email)+'</div>':"")+'</td>'+
+        '<td data-l="Kind">'+escapeHtml(gpKindLabel(w.waiver_kind))+'</td>'+
+        '<td data-l="Scope">'+escapeHtml(gpScopeLabel(w.waiver_scope))+'</td>'+
+        '<td data-l="Amount" class="text-right mono">'+gpMoney(w.amount)+'</td>'+
+        '<td data-l="Status"><select data-wstatus="'+w.id+'" class="gp-input text-sm py-1.5">'+
+        ["pending","sent","signed"].map(function(s){
+          return '<option value="'+s+'"'+(w.status===s?" selected":"")+'>'+s.charAt(0).toUpperCase()+s.slice(1)+'</option>';
+        }).join("")+'</select></td>'+
+        '<td data-l="" class="no-lbl"><div class="flex gap-2 justify-end flex-wrap">'+
+        '<button data-copylink="'+w.id+'" class="text-sm font-semibold px-3 py-1.5 border border-slate-300 rounded-lg hover:border-orange-400">Copy signing link</button>'+
+        '<button data-delwaiver="'+w.id+'" class="text-sm font-semibold text-red-600 px-2 hover:underline">Delete</button>'+
+        '</div></td></tr>';
+    }).join("") || '<tr><td colspan="6" class="text-center text-slate-400 py-6">No waivers yet — add one per subcontractor below.</td></tr>';
+    var statusOpts = ["draft","submitted","paid"].map(function(s){
+      return '<option value="'+s+'"'+(D.status===s?" selected":"")+'>'+s.charAt(0).toUpperCase()+s.slice(1)+'</option>';
+    }).join("");
+    return '<div class="flex items-center justify-between flex-wrap gap-3">'+
+      '<button id="gp-back-project" class="text-sm font-semibold text-slate-500 hover:underline">← Back to '+escapeHtml(projName)+'</button>'+
+      '<button id="gp-print-btn" class="px-4 py-2 text-sm font-bold text-white rounded-lg" style="background:var(--navy)">🖨 Print pay application</button>'+
+      '</div>'+
+      '<div class="gp-card p-6 mt-3">'+
+      '<div class="flex items-center gap-3 flex-wrap">'+
+      '<h3 class="text-xl font-bold" style="color:var(--navy)">Draw #'+escapeHtml(String(D.draw_number!=null?D.draw_number:"—"))+'</h3>'+
+      gpPill(D.status)+'</div>'+
+      '<p class="text-sm text-slate-500 mt-1">'+gpDate(D.period_start)+' – '+gpDate(D.period_end)+
+      ' · Retainage '+(D.retainage_pct!=null?D.retainage_pct:0)+'%'+
+      (D.notes?' · '+escapeHtml(D.notes):"")+'</p>'+
+      '<details class="mt-4"><summary class="text-sm font-bold cursor-pointer" style="color:var(--navy)">Edit draw details</summary>'+
+      '<div class="grid md:grid-cols-3 gap-3 mt-3">'+
+      '<label class="block"><span class="gp-label">Draw #</span><input id="gp-d-num" type="number" min="1" class="gp-input w-full mt-1" value="'+(D.draw_number!=null?D.draw_number:"")+'" /></label>'+
+      '<label class="block"><span class="gp-label">Period start</span><input id="gp-d-start" type="date" class="gp-input w-full mt-1" value="'+escapeHtml(D.period_start||"")+'" /></label>'+
+      '<label class="block"><span class="gp-label">Period end</span><input id="gp-d-end" type="date" class="gp-input w-full mt-1" value="'+escapeHtml(D.period_end||"")+'" /></label>'+
+      '<label class="block"><span class="gp-label">Retainage %</span><input id="gp-d-ret" type="number" min="0" max="100" class="gp-input w-full mt-1" value="'+(D.retainage_pct!=null?D.retainage_pct:0)+'" /></label>'+
+      '<label class="block"><span class="gp-label">Status</span><select id="gp-d-status" class="gp-input w-full mt-1">'+statusOpts+'</select></label>'+
+      '<label class="block"><span class="gp-label">Notes</span><input id="gp-d-notes" type="text" class="gp-input w-full mt-1" value="'+escapeHtml(D.notes||"")+'" /></label>'+
+      '</div>'+
+      '<div class="mt-3 flex items-center gap-3"><button id="gp-draw-save" class="btn-primary px-5 py-2.5 text-sm">Save draw details</button>'+
+      '<span id="gp-draw-msg" class="text-sm"></span></div></details></div>'+
+      gpWaiverDashHtml(waivers)+
+      '<div class="gp-card p-6 mt-4">'+
+      '<h4 class="font-bold text-lg" style="color:var(--navy)">Schedule of values</h4>'+
+      '<p class="text-sm text-slate-500 mt-1">Edit any field — changes save automatically and totals refresh.</p>'+
+      '<div class="overflow-x-auto mt-4"><table class="w-full text-sm gp-tbl" style="min-width:640px">'+
+      '<thead><tr><th>Description</th><th class="text-right">Scheduled value</th><th class="text-right">% complete</th><th class="text-right">Earned</th><th></th></tr></thead>'+
+      '<tbody id="gp-sov-body">'+lineRows+'</tbody></table></div>'+
+      gpTotalsHtml(totals)+
+      '<div class="mt-5 border-t border-slate-200 pt-4">'+
+      '<h5 class="font-bold text-sm" style="color:var(--navy)">Add line</h5>'+
+      '<div class="grid md:grid-cols-4 gap-3 mt-2">'+
+      '<input id="gp-nl-desc" type="text" class="gp-input md:col-span-2" placeholder="Line description" />'+
+      '<input id="gp-nl-val" type="number" min="0" step="100" class="gp-input" placeholder="Scheduled value" />'+
+      '<div class="flex gap-2"><input id="gp-nl-pct" type="number" min="0" max="100" class="gp-input w-full" placeholder="% complete" />'+
+      '<button id="gp-add-line" class="btn-primary px-4 py-2 text-sm whitespace-nowrap">+ Add</button></div>'+
+      '</div></div></div>'+
+      '<div class="gp-card p-6 mt-4">'+
+      '<h4 class="font-bold text-lg" style="color:var(--navy)">Lien waivers</h4>'+
+      '<p class="text-sm text-slate-500 mt-1">One waiver per subcontractor for this draw.</p>'+
+      '<div class="grid md:grid-cols-6 gap-3 mt-4">'+
+      '<label class="block md:col-span-2"><span class="gp-label">Sub name</span><input id="gp-nw-name" type="text" class="gp-input w-full mt-1" placeholder="Apex Electrical" /></label>'+
+      '<label class="block md:col-span-2"><span class="gp-label">Sub email</span><input id="gp-nw-email" type="email" class="gp-input w-full mt-1" placeholder="ap@apex.com" /></label>'+
+      '<label class="block"><span class="gp-label">Waiver kind</span><select id="gp-nw-kind" class="gp-input w-full mt-1">'+
+      '<option value="conditional">Conditional</option><option value="unconditional">Unconditional</option></select></label>'+
+      '<label class="block"><span class="gp-label">Waiver scope</span><select id="gp-nw-scope" class="gp-input w-full mt-1">'+
+      '<option value="progress">Progress</option><option value="final">Final</option></select></label>'+
+      '<label class="block"><span class="gp-label">Amount</span><input id="gp-nw-amt" type="number" min="0" step="100" class="gp-input w-full mt-1" placeholder="0" /></label>'+
+      '<div class="md:col-span-5"></div>'+
+      '<div><button id="gp-add-waiver" class="btn-primary px-5 py-2.5 text-sm">+ Add waiver</button></div>'+
+      '</div>'+
+      '<div class="overflow-x-auto mt-5"><table class="w-full text-sm gp-tbl" style="min-width:680px">'+
+      '<thead><tr><th>Subcontractor</th><th>Kind</th><th>Scope</th><th class="text-right">Amount</th><th>Status</th><th></th></tr></thead>'+
+      '<tbody id="gp-waiver-body">'+waiverRows+'</tbody></table></div></div>';
+  }
+  function gpWireDraw(){
+    var root = $("gp-app");
+    var D = (gp.draw && gp.draw.draw) || {};
+    $("gp-back-project").addEventListener("click", function(){
+      gp.view = "project"; gp.draw = null; gpRender();
+    });
+    $("gp-print-btn").addEventListener("click", function(){
+      gpPrintPayApp({project:gp.project||{}, draw:D,
+        lines:gp.draw.lines||[], waivers:gp.draw.waivers||[], totals:gp.draw.totals||{}});
+    });
+    $("gp-draw-save").addEventListener("click", function(){
+      var msg = $("gp-draw-msg"); msg.textContent = ""; msg.style.color = "";
+      var payload = {draw_number:Number($("gp-d-num").value)||D.draw_number,
+        period_start:$("gp-d-start").value||null, period_end:$("gp-d-end").value||null,
+        retainage_pct:Number($("gp-d-ret").value), status:$("gp-d-status").value,
+        notes:$("gp-d-notes").value.trim()};
+      api("/api/getpaid/draws/"+D.id,{method:"PUT",body:JSON.stringify(payload)}).then(function(res){
+        if (gpGate(res)) return;
+        if (!res.ok) throw new Error(res.body.error||"Save failed");
+        msg.style.color = "green"; msg.textContent = "Saved.";
+        gpReloadDraw();
+      }).catch(function(e){ msg.style.color = "red"; msg.textContent = e.message; });
+    });
+    // SOV inline editing
+    var sov = $("gp-sov-body");
+    if (sov) sov.addEventListener("change", function(e){
+      var inp = e.target.closest("[data-f]"); if (!inp) return;
+      var tr = inp.closest("[data-lid]"); if (!tr) return;
+      var payload = {};
+      Array.prototype.forEach.call(tr.querySelectorAll("[data-f]"), function(x){
+        var f = x.dataset.f;
+        payload[f] = (f==="description") ? x.value : Number(x.value);
+      });
+      inp.disabled = true;
+      api("/api/getpaid/lines/"+tr.dataset.lid,{method:"PUT",body:JSON.stringify(payload)})
+        .then(function(res){
+          if (gpGate(res)) return;
+          if (!res.ok) throw new Error(res.body.error||"Save failed");
+          gpReloadDraw();
+        }).catch(function(err){ alert("Could not save line: "+err.message); inp.disabled = false; });
+    });
+    // delegation: delete line / delete waiver / copy signing link
+    root.onclick = function(e){
+      var dl = e.target.closest("[data-delline]");
+      if (dl){
+        if (!confirm("Delete this schedule-of-values line?")) return;
+        api("/api/getpaid/lines/"+dl.dataset.delline,{method:"DELETE"}).then(function(res){
+          if (gpGate(res)) return;
+          if (!res.ok) throw new Error(res.body.error||"Delete failed");
+          gpReloadDraw();
+        }).catch(function(err){ alert(err.message); });
+        return;
+      }
+      var dw = e.target.closest("[data-delwaiver]");
+      if (dw){
+        if (!confirm("Delete this waiver?")) return;
+        api("/api/getpaid/waivers/"+dw.dataset.delwaiver,{method:"DELETE"}).then(function(res){
+          if (gpGate(res)) return;
+          if (!res.ok) throw new Error(res.body.error||"Delete failed");
+          gpReloadDraw();
+        }).catch(function(err){ alert(err.message); });
+        return;
+      }
+      var cl = e.target.closest("[data-copylink]");
+      if (cl){
+        var btn = cl; btn.disabled = true;
+        api("/api/getpaid/waivers/"+cl.dataset.copylink+"/send-link",{method:"POST"})
+          .then(function(res){
+            btn.disabled = false;
+            if (!res.ok) throw new Error(res.body.error||"Could not create link");
+            gpCopyText(window.location.origin + res.body.url, btn);
+          }).catch(function(err){ alert(err.message); });
+      }
+    };
+    // add line
+    $("gp-add-line").addEventListener("click", function(){
+      var desc = $("gp-nl-desc").value.trim();
+      var val = Number($("gp-nl-val").value);
+      var pct = Number($("gp-nl-pct").value);
+      if (!desc || !isFinite(val)){ alert("Enter a description and scheduled value."); return; }
+      api("/api/getpaid/draws/"+D.id+"/lines",{method:"POST",
+        body:JSON.stringify({description:desc, scheduled_value:val, pct_complete:isFinite(pct)?pct:0})})
+        .then(function(res){
+          if (gpGate(res)) return;
+          if (!res.ok) throw new Error(res.body.error||"Add failed");
+          gpReloadDraw();
+        }).catch(function(e){ alert(e.message); });
+    });
+    // add waiver
+    $("gp-add-waiver").addEventListener("click", function(){
+      var payload = {sub_name:$("gp-nw-name").value.trim(),
+        sub_email:$("gp-nw-email").value.trim(),
+        waiver_kind:$("gp-nw-kind").value, waiver_scope:$("gp-nw-scope").value,
+        amount:Number($("gp-nw-amt").value)};
+      if (!payload.sub_name || !isFinite(payload.amount)){ alert("Enter a sub name and amount."); return; }
+      api("/api/getpaid/draws/"+D.id+"/waivers",{method:"POST",body:JSON.stringify(payload)})
+        .then(function(res){
+          if (gpGate(res)) return;
+          if (!res.ok) throw new Error(res.body.error||"Add failed");
+          gpReloadDraw();
+        }).catch(function(e){ alert(e.message); });
+    });
+    // waiver status change
+    var wb = $("gp-waiver-body");
+    if (wb) wb.addEventListener("change", function(e){
+      var sel = e.target.closest("[data-wstatus]"); if (!sel) return;
+      sel.disabled = true;
+      api("/api/getpaid/waivers/"+sel.dataset.wstatus,{method:"PUT",
+        body:JSON.stringify({status:sel.value})}).then(function(res){
+        if (gpGate(res)) return;
+        if (!res.ok) throw new Error(res.body.error||"Save failed");
+        gpReloadDraw();
+      }).catch(function(err){ alert(err.message); sel.disabled = false; });
+    });
+  }
+  function gpCopyText(text, btn){
+    var orig = btn.textContent;
+    function done(){ btn.textContent = "Copied!"; setTimeout(function(){ btn.textContent = orig; },1500); }
+    function fallback(){
+      var ta = document.createElement("textarea");
+      ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); } catch(e){}
+      document.body.removeChild(ta); done();
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else fallback();
+  }
+
+  /* ---------- printable pay application (G702/G703-style) ---------- */
+  function gpPayAppHtml(p){
+    var d = p.draw||{}, lines = p.lines||[], t = p.totals||{}, waivers = p.waivers||[];
+    var proj = p.project||{};
+    var cell = "border:1px solid #000;padding:6px;";
+    var rows = lines.map(function(l,i){
+      var earned = (l.scheduled_value||0)*(l.pct_complete||0)/100;
+      var ret = earned*(d.retainage_pct||0)/100;
+      return '<tr>'+
+        '<td style="'+cell+'text-align:center">'+(i+1)+'</td>'+
+        '<td style="'+cell+'">'+escapeHtml(l.description||"")+'</td>'+
+        '<td style="'+cell+'text-align:right">'+gpMoney(l.scheduled_value)+'</td>'+
+        '<td style="'+cell+'text-align:center">'+(l.pct_complete||0)+'%</td>'+
+        '<td style="'+cell+'text-align:right">'+gpMoney(earned)+'</td>'+
+        '<td style="'+cell+'text-align:right">'+gpMoney(ret)+'</td></tr>';
+    }).join("");
+    var signed = waivers.filter(function(w){return w.status==="signed";}).length;
+    var unsigned = waivers.filter(function(w){return w.status!=="signed";})
+      .map(function(w){return escapeHtml(w.sub_name);}).join(", ");
+    var tot = "text-align:right;font-weight:bold;";
+    return '<div style="font-family:Arial,Helvetica,sans-serif;color:#000;max-width:820px;margin:0 auto;padding:24px;font-size:13px">'+
+      '<div style="text-align:center;border-bottom:3px solid #000;padding-bottom:12px">'+
+      '<div style="font-size:20px;font-weight:bold;letter-spacing:.04em">APPLICATION AND CERTIFICATE FOR PAYMENT</div>'+
+      '<div style="font-size:11px;color:#333;margin-top:4px">G702 / G703-style summary</div></div>'+
+      '<table style="width:100%;margin-top:14px;border-collapse:collapse">'+
+      '<tr><td style="padding:4px 0;width:50%"><strong>Project:</strong> '+escapeHtml(proj.name||"—")+'</td>'+
+      '<td style="padding:4px 0"><strong>Draw #:</strong> '+escapeHtml(String(d.draw_number!=null?d.draw_number:"—"))+'</td></tr>'+
+      '<tr><td style="padding:4px 0"><strong>Client:</strong> '+escapeHtml(proj.client_name||"—")+'</td>'+
+      '<td style="padding:4px 0"><strong>Period:</strong> '+gpDate(d.period_start)+' – '+gpDate(d.period_end)+'</td></tr>'+
+      '<tr><td style="padding:4px 0"><strong>Retainage:</strong> '+(d.retainage_pct!=null?d.retainage_pct:0)+'%</td>'+
+      '<td style="padding:4px 0"><strong>Status:</strong> '+escapeHtml(d.status||"draft")+'</td></tr></table>'+
+      '<table style="width:100%;border-collapse:collapse;margin-top:14px">'+
+      '<thead><tr style="background:#eee">'+
+      '<th style="'+cell+'">#</th><th style="'+cell+'text-align:left">Description</th>'+
+      '<th style="'+cell+'">Scheduled value</th><th style="'+cell+'">% complete</th>'+
+      '<th style="'+cell+'">Earned to date</th><th style="'+cell+'">Retainage</th></tr></thead>'+
+      '<tbody>'+rows+'</tbody></table>'+
+      '<table style="width:60%;margin:14px 0 0 auto;border-collapse:collapse">'+
+      '<tr><td style="padding:4px">Contract total</td><td style="'+tot+'">'+gpMoney(t.scheduled_total)+'</td></tr>'+
+      '<tr><td style="padding:4px">Earned to date</td><td style="'+tot+'">'+gpMoney(t.earned_to_date)+'</td></tr>'+
+      '<tr><td style="padding:4px">Less retainage</td><td style="'+tot+'">'+gpMoney(t.retained_to_date)+'</td></tr>'+
+      '<tr><td style="padding:6px 4px;border-top:2px solid #000"><strong>AMOUNT DUE THIS DRAW</strong></td>'+
+      '<td style="'+tot+'border-top:2px solid #000;padding:6px 4px">'+gpMoney(t.due_this_draw)+'</td></tr></table>'+
+      (waivers.length?'<div style="margin-top:12px"><strong>Lien waivers:</strong> '+signed+' of '+waivers.length+' signed'+
+      (unsigned?' — unsigned: '+unsigned:"")+'</div>':"")+
+      '<div style="margin-top:18px;font-size:12px">The undersigned Contractor certifies that the Work covered by this '+
+      'Application has been completed in accordance with the Contract Documents and that the amount requested is due.</div>'+
+      '<table style="width:100%;margin-top:28px;border-collapse:collapse">'+
+      '<tr><td style="width:33%;padding-right:16px"><div style="border-bottom:1px solid #000;height:32px"></div>'+
+      '<div style="font-size:11px;margin-top:4px">Contractor — signature / date</div></td>'+
+      '<td style="width:33%;padding-right:16px"><div style="border-bottom:1px solid #000;height:32px"></div>'+
+      '<div style="font-size:11px;margin-top:4px">Owner — signature / date</div></td>'+
+      '<td style="width:34%"><div style="border-bottom:1px solid #000;height:32px"></div>'+
+      '<div style="font-size:11px;margin-top:4px">Date</div></td></tr></table>'+
+      '</div>';
+  }
+  function gpPrintPayApp(p){
+    $("gp-print-root").innerHTML = gpPayAppHtml(p);
+    document.body.classList.add("gp-printing");
+    window.print();
+  }
+  window.addEventListener("afterprint", function(){
+    document.body.classList.remove("gp-printing");
+  });
+
+  /* ---------- billing services (Settings) ---------- */
+  function loadBillingServices(){
+    var el = $("billing-services");
+    if (!el || !authUser) return;
+    api("/api/billing/services").then(function(res){
+      if (!res.ok){
+        el.innerHTML = '<p class="text-sm text-slate-400">Service info unavailable.</p>';
+        return;
+      }
+      var svcs = res.body.services || [];
+      el.innerHTML = svcs.map(function(s){
+        var active = !!s.active;
+        var pill = active ? '<span class="gp-pill gp-pill-signed">Active</span>'
+                          : '<span class="gp-pill gp-pill-draft">Not subscribed</span>';
+        var action = "";
+        if (s.key==="getpaid"){
+          action = active
+            ? '<button id="gp-unsubscribe" class="px-4 py-2 text-sm font-semibold border border-slate-300 rounded-lg hover:border-red-400 hover:text-red-600">Unsubscribe</button>'
+            : '<button id="gp-subscribe" class="btn-primary px-4 py-2 text-sm">Subscribe — $99/mo</button>';
+        } else if (s.key==="tabulator"){
+          action = '<span class="text-sm text-slate-500">'+(active?"Managed in Billing above":"Subscribe in Billing above")+'</span>';
+        }
+        return '<div class="flex items-center justify-between gap-3 border border-slate-200 rounded-lg px-4 py-3 flex-wrap">'+
+          '<div><div class="font-bold" style="color:var(--navy)">'+escapeHtml(s.name||s.key)+'</div>'+
+          '<div class="text-sm text-slate-500 mt-0.5">'+escapeHtml(s.price||"")+' · '+pill+'</div></div>'+
+          '<div>'+action+'</div></div>';
+      }).join("") || '<p class="text-sm text-slate-400">No services found.</p>';
+      var sub = $("gp-subscribe");
+      if (sub) sub.addEventListener("click", function(){
+        sub.disabled = true;
+        $("gp-billing-msg").textContent = "";
+        gpSubscribeFlow().catch(function(e){
+          sub.disabled = false;
+          $("gp-billing-msg").textContent = e.message==="billing_not_configured"
+            ? "Billing isn\u2019t configured on this account yet — check back soon."
+            : e.message;
+          $("gp-billing-msg").style.color = "red";
+        });
+      });
+      var un = $("gp-unsubscribe");
+      if (un) un.addEventListener("click", function(){
+        if (!confirm("Cancel the Get-Paid suite ($99/mo)? You\u2019ll keep access until the end of the billing period.")) return;
+        $("gp-billing-msg").textContent = "";
+        api("/api/billing/services/getpaid/cancel",{method:"POST"}).then(function(r){
+          if (!r.ok) throw new Error(r.body.error||"Cancel failed");
+          gp.subscribed = false;
+          loadBillingServices();
+          if (!$("dtab-getpaid").classList.contains("hidden")) loadGetPaid();
+          $("gp-billing-msg").style.color = "green";
+          $("gp-billing-msg").textContent = "Get-Paid subscription cancelled.";
+        }).catch(function(e){
+          $("gp-billing-msg").style.color = "red";
+          $("gp-billing-msg").textContent = e.message;
+        });
+      });
+    }).catch(function(){
+      el.innerHTML = '<p class="text-sm text-slate-400">Service info unavailable.</p>';
+    });
+  }
+
+  /* ---------- public waiver signing (/w/<token>, no login) ---------- */
+  function enterWaiverMode(){
+    ["hero","landing-how","landing-cta","landing-competitors"].forEach(function(id){
+      var el = $(id); if (el) el.classList.add("hidden");
+    });
+    var app = $("app"); if (app) app.classList.add("hidden");
+    hide("dashboard-section"); hide("results-section"); hide("confirm-section");
+    hide("processing-section"); hide("upload-section"); hide("gp-demo");
+    Array.prototype.forEach.call(document.querySelectorAll("footer"), function(f){ f.classList.add("hidden"); });
+    document.title = "Sign lien waiver — Bid Tabulator";
+    show("waiver-signing");
+    loadWaiverSigning(waiverToken);
+  }
+  function waiverSigningHtml(w){
+    function row(label, val){
+      return '<div class="flex justify-between gap-4 py-2.5 border-b border-slate-100 text-sm">'+
+        '<span class="text-slate-500">'+label+'</span>'+
+        '<span class="font-semibold text-right">'+val+'</span></div>';
+    }
+    return '<div class="text-center mb-6">'+
+      '<div class="font-bold text-lg" style="color:var(--navy)">Bid Tabulator</div>'+
+      '<p class="text-sm text-slate-500">Lien waiver signature</p></div>'+
+      '<h3 class="text-xl font-bold mb-3" style="color:var(--navy)">Lien waiver</h3>'+
+      row("Subcontractor", escapeHtml(w.sub_name||"—"))+
+      row("Amount", '<span class="mono">'+gpMoney(w.amount)+'</span>')+
+      row("Waiver kind", escapeHtml(gpKindLabel(w.waiver_kind)))+
+      row("Waiver scope", escapeHtml(gpScopeLabel(w.waiver_scope)))+
+      row("Project", escapeHtml(w.project_name||"—"))+
+      row("Draw", w.draw_number!=null ? "Draw #"+escapeHtml(String(w.draw_number)) : "—")+
+      '<div id="waiver-sign-msg" class="hidden mt-4 p-3 rounded-lg bg-red-50 text-red-800 text-sm"></div>'+
+      '<button id="waiver-sign-btn" class="btn-primary w-full py-3 mt-6">Sign as '+escapeHtml(w.sub_name||"")+'</button>'+
+      '<p class="text-xs text-slate-400 mt-3 text-center">Signing records your acceptance of the waiver details shown above.</p>';
+  }
+  function loadWaiverSigning(token){
+    var card = $("waiver-card");
+    api("/api/waiver/"+encodeURIComponent(token)).then(function(res){
+      if (!res.ok) throw new Error("invalid");
+      var w = res.body.waiver || res.body;
+      card.innerHTML = waiverSigningHtml(w);
+      $("waiver-sign-btn").addEventListener("click", function(){
+        var btn = this;
+        btn.disabled = true; btn.textContent = "Signing…";
+        api("/api/waiver/"+encodeURIComponent(token)+"/sign",{method:"POST"}).then(function(r2){
+          if (!r2.ok) throw new Error(r2.body.error||"Sign failed");
+          card.innerHTML = '<div class="text-center py-8"><div class="text-5xl mb-4">✓</div>'+
+            '<h3 class="text-xl font-bold" style="color:var(--navy)">Waiver signed</h3>'+
+            '<p class="text-slate-500 mt-2 text-sm">Thank you'+(w.sub_name?", "+escapeHtml(w.sub_name):"")+
+            '. The general contractor has been notified.</p></div>';
+        }).catch(function(e){
+          btn.disabled = false; btn.textContent = "Sign as "+(w.sub_name||"");
+          var m = $("waiver-sign-msg");
+          if (m){ m.textContent = e.message; m.classList.remove("hidden"); }
+        });
+      });
+    }).catch(function(){
+      card.innerHTML = '<div class="text-center py-8"><div class="text-5xl mb-4">🔗</div>'+
+        '<h3 class="text-xl font-bold" style="color:var(--navy)">Link not valid</h3>'+
+        '<p class="text-slate-500 mt-2 text-sm">This signing link is invalid or has expired. '+
+        'Ask the general contractor who sent it for a new link.</p></div>';
+    });
+  }
+
+  /* ---------- interactive demo (logged-out, hardcoded data, no API) ---------- */
+  var GP_DEMO = {
+    project:{name:"Downtown Office TI", client_name:"Meridian Development"},
+    draw:{draw_number:2, period_start:"2026-09-01", period_end:"2026-09-30", retainage_pct:10, status:"draft"},
+    lines:[
+      {description:"Mobilization & general conditions", scheduled_value:45000, pct_complete:100},
+      {description:"Demolition", scheduled_value:38500, pct_complete:100},
+      {description:"Rough-in electrical", scheduled_value:62000, pct_complete:75},
+      {description:"HVAC rough-in", scheduled_value:54250, pct_complete:60},
+      {description:"Drywall & framing", scheduled_value:71000, pct_complete:35}
+    ],
+    waivers:[
+      {sub_name:"Apex Electrical", sub_email:"office@apexelec.example", waiver_kind:"conditional", waiver_scope:"progress", amount:46500, status:"signed"},
+      {sub_name:"Summit Drywall", sub_email:"billing@summitdrywall.example", waiver_kind:"conditional", waiver_scope:"progress", amount:24850, status:"sent"},
+      {sub_name:"Pinnacle Plumbing", sub_email:"ap@pinnacleplumb.example", waiver_kind:"conditional", waiver_scope:"progress", amount:32550, status:"pending"}
+    ]
+  };
+  var gpDemoStep = 1, gpDemoHidden = [];
+  var GP_DEMO_STEPS = ["Schedule of values","Pay application","Waiver status"];
+  function gpCalcTotals(lines, retainagePct){
+    var scheduled = lines.reduce(function(s,l){ return s+(l.scheduled_value||0); },0);
+    var earned = lines.reduce(function(s,l){ return s+(l.scheduled_value||0)*(l.pct_complete||0)/100; },0);
+    var retained = earned*(retainagePct||0)/100;
+    return {scheduled_total:scheduled, earned_to_date:earned,
+            retained_to_date:retained, due_this_draw:earned-retained};
+  }
+  function gpDemoPayload(){
+    return {project:GP_DEMO.project, draw:GP_DEMO.draw, lines:GP_DEMO.lines,
+            waivers:GP_DEMO.waivers,
+            totals:gpCalcTotals(GP_DEMO.lines, GP_DEMO.draw.retainage_pct)};
+  }
+  function openGpDemo(){
+    gpDemoHidden = [];
+    ["hero","landing-how","landing-cta","landing-competitors"].forEach(function(id){
+      var el = $(id);
+      if (el && !el.classList.contains("hidden")){ el.classList.add("hidden"); gpDemoHidden.push(el); }
+    });
+    var app = $("app");
+    if (app && !app.classList.contains("hidden")){ app.classList.add("hidden"); gpDemoHidden.push(app); }
+    Array.prototype.forEach.call(document.querySelectorAll("footer"), function(f){
+      if (!f.classList.contains("hidden")){ f.classList.add("hidden"); gpDemoHidden.push(f); }
+    });
+    hide("gp-demo");  // ensure clean state
+    gpDemoStep = 1;
+    show("gp-demo");
+    gpDemoRender();
+    window.scrollTo({top:0, behavior:"smooth"});
+  }
+  function closeGpDemo(){
+    hide("gp-demo");
+    gpDemoHidden.forEach(function(el){ el.classList.remove("hidden"); });
+    gpDemoHidden = [];
+    window.scrollTo({top:0, behavior:"smooth"});
+  }
+  function gpDemoRender(){
+    var pills = GP_DEMO_STEPS.map(function(s,i){
+      var n = i+1, active = n===gpDemoStep;
+      return '<button data-demostep="'+n+'" class="px-4 py-2 rounded-lg text-sm font-bold '+
+        (active?"text-white":"bg-white border border-slate-200 text-slate-600")+'"'+
+        (active?' style="background:var(--navy)"':"")+'>'+n+'. '+s+'</button>';
+    }).join("");
+    $("gp-demo-body").innerHTML =
+      '<div class="flex items-center justify-between flex-wrap gap-3 mb-2">'+
+      '<h2 class="text-2xl font-bold" style="color:var(--navy)">Get-Paid demo</h2>'+
+      '<button id="gp-demo-exit" class="px-4 py-2 text-sm font-semibold border border-slate-300 rounded-lg bg-white">← Back to home</button></div>'+
+      '<p class="text-sm text-slate-500 mb-5">Sample project: <strong>Downtown Office TI</strong> · Meridian Development · Draw #2. '+
+      'Hardcoded demo data — nothing is saved or sent.</p>'+
+      '<div class="flex gap-2 flex-wrap mb-5">'+pills+'</div>'+
+      '<div id="gp-demo-content">'+gpDemoStepHtml()+'</div>'+
+      '<div class="flex justify-between mt-5">'+
+      (gpDemoStep>1?'<button id="gp-demo-prev" class="px-5 py-2.5 text-sm font-semibold border border-slate-300 rounded-lg bg-white">← Back</button>':"<span></span>")+
+      (gpDemoStep<3?'<button id="gp-demo-next" class="btn-primary px-5 py-2.5 text-sm">Next →</button>'
+                   :'<button id="gp-demo-exit2" class="btn-primary px-5 py-2.5 text-sm">Done — back to home</button>')+
+      '</div>';
+    $("gp-demo-exit").addEventListener("click", closeGpDemo);
+    var e2 = $("gp-demo-exit2"); if (e2) e2.addEventListener("click", closeGpDemo);
+    var pv = $("gp-demo-prev"); if (pv) pv.addEventListener("click", function(){ gpDemoStep--; gpDemoRender(); });
+    var nx = $("gp-demo-next"); if (nx) nx.addEventListener("click", function(){ gpDemoStep++; gpDemoRender(); });
+    Array.prototype.forEach.call(document.querySelectorAll("[data-demostep]"), function(b){
+      b.addEventListener("click", function(){ gpDemoStep = Number(b.dataset.demostep); gpDemoRender(); });
+    });
+    gpDemoWireStep();
+  }
+  function gpDemoStepHtml(){
+    if (gpDemoStep===1){
+      var rows = GP_DEMO.lines.map(function(l,i){
+        var earned = l.scheduled_value*l.pct_complete/100;
+        return '<tr>'+
+          '<td data-l="Description" class="font-medium">'+escapeHtml(l.description)+'</td>'+
+          '<td data-l="Scheduled value" class="text-right mono">'+gpMoney(l.scheduled_value)+'</td>'+
+          '<td data-l="% complete"><div class="flex items-center gap-1 justify-end">'+
+          '<input type="number" min="0" max="100" step="5" data-demo-pct="'+i+'" value="'+l.pct_complete+'" class="gp-input w-20 text-right mono" />'+
+          '<span class="text-slate-400 text-sm">%</span></div></td>'+
+          '<td data-l="Earned" class="text-right mono font-semibold" data-demo-earned="'+i+'">'+gpMoney(earned)+'</td></tr>';
+      }).join("");
+      return '<div class="gp-card p-6 md:p-8">'+
+        '<h3 class="font-bold text-lg" style="color:var(--navy)">Step 1 · Adjust a % complete</h3>'+
+        '<p class="text-sm text-slate-500 mt-1">Change any % complete below and watch the totals update instantly.</p>'+
+        '<div class="overflow-x-auto mt-4"><table class="w-full text-sm gp-tbl" style="min-width:560px">'+
+        '<thead><tr><th>Description</th><th class="text-right">Scheduled value</th><th class="text-right">% complete</th><th class="text-right">Earned</th></tr></thead>'+
+        '<tbody>'+rows+'</tbody></table></div>'+
+        '<div id="gp-demo-totals">'+gpTotalsHtml(gpCalcTotals(GP_DEMO.lines, GP_DEMO.draw.retainage_pct))+'</div></div>';
+    }
+    if (gpDemoStep===2){
+      return '<div class="gp-card p-6 md:p-8">'+
+        '<h3 class="font-bold text-lg" style="color:var(--navy)">Step 2 · Printable pay application</h3>'+
+        '<p class="text-sm text-slate-500 mt-1">This is what the GC prints and sends with the draw — '+
+        'a clean G702/G703-style summary with signature lines.</p>'+
+        '<button id="gp-demo-print" class="px-5 py-2.5 text-sm font-bold text-white rounded-lg mt-4" style="background:var(--navy)">🖨 Print this pay application</button>'+
+        '<div class="mt-5 border border-slate-200 rounded-lg overflow-hidden">'+gpPayAppHtml(gpDemoPayload())+'</div></div>';
+    }
+    var waivers = GP_DEMO.waivers;
+    var rows3 = waivers.map(function(w){
+      return '<tr>'+
+        '<td data-l="Subcontractor"><div class="font-semibold">'+escapeHtml(w.sub_name)+'</div>'+
+        '<div class="text-xs text-slate-400">'+escapeHtml(w.sub_email)+'</div></td>'+
+        '<td data-l="Kind">'+escapeHtml(gpKindLabel(w.waiver_kind))+'</td>'+
+        '<td data-l="Scope">'+escapeHtml(gpScopeLabel(w.waiver_scope))+'</td>'+
+        '<td data-l="Amount" class="text-right mono">'+gpMoney(w.amount)+'</td>'+
+        '<td data-l="Status">'+gpPill(w.status)+'</td></tr>';
+    }).join("");
+    return gpWaiverDashHtml(waivers)+
+      '<div class="gp-card p-6 md:p-8 mt-4">'+
+      '<h3 class="font-bold text-lg" style="color:var(--navy)">Step 3 · Who\u2019s holding up the draw</h3>'+
+      '<p class="text-sm text-slate-500 mt-1">Every sub gets a one-tap signing link — no login needed. '+
+      'The dashboard shows at a glance who has signed and who is still outstanding.</p>'+
+      '<div class="overflow-x-auto mt-4"><table class="w-full text-sm gp-tbl" style="min-width:560px">'+
+      '<thead><tr><th>Subcontractor</th><th>Kind</th><th>Scope</th><th class="text-right">Amount</th><th>Status</th></tr></thead>'+
+      '<tbody>'+rows3+'</tbody></table></div></div>';
+  }
+  function gpDemoWireStep(){
+    if (gpDemoStep===1){
+      $("gp-demo-content").addEventListener("input", function(e){
+        var inp = e.target.closest("[data-demo-pct]"); if (!inp) return;
+        var i = Number(inp.dataset.demoPct);
+        var v = Math.max(0, Math.min(100, Number(inp.value)||0));
+        GP_DEMO.lines[i].pct_complete = v;
+        var cell = document.querySelector('[data-demo-earned="'+i+'"]');
+        if (cell) cell.textContent = gpMoney(GP_DEMO.lines[i].scheduled_value*v/100);
+        var t = $("gp-demo-totals");
+        if (t) t.innerHTML = gpTotalsHtml(gpCalcTotals(GP_DEMO.lines, GP_DEMO.draw.retainage_pct));
+      });
+    }
+    if (gpDemoStep===2){
+      var pb = $("gp-demo-print");
+      if (pb) pb.addEventListener("click", function(){ gpPrintPayApp(gpDemoPayload()); });
+    }
+  }
+  var gpDemoBtn = $("gp-demo-btn");
+  if (gpDemoBtn) gpDemoBtn.addEventListener("click", openGpDemo);
 
   refreshMe();
 })();
