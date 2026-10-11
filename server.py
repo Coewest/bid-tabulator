@@ -1582,9 +1582,9 @@ def upload():
         if reason == "needs_account":
             return jsonify(error="free_limit",
                            message="Your free tabulation is used. Create a free account to save it — "
-                                   "then subscribe for $49/mo for unlimited tabulations."), 402
+                                   "then subscribe for $129/mo for unlimited tabulations."), 402
         return jsonify(error="subscription_required",
-                       message="You've used your free tabulation. Subscribe for $49/mo "
+                       message="You've used your free tabulation. Subscribe for $129/mo "
                                "for unlimited bid tabulations."), 402
     resp = _do_upload()
     # On success, persist the tabulation and mark free use.
