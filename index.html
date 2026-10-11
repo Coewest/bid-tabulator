@@ -307,8 +307,6 @@
       <button data-dtab="tabs" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">My tabulations</button>
       <button data-dtab="settings" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">Settings</button>
       <button data-dtab="admin" id="dash-tab-admin" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200 hidden">Admin</button>
-    </div>
-  </div>
 
   <!-- Tabulations tab -->
   <div id="dtab-tabs" class="mt-5 bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
@@ -372,6 +370,21 @@
   <!-- Admin tab -->
   <div id="dtab-admin" class="mt-5 hidden space-y-5">
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4" id="admin-stats"></div>
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
+      <h3 class="text-xl font-bold mb-4" style="color:var(--navy)">Site tracking</h3>
+      <div id="tracking-stats" class="text-sm text-slate-500">Loading…</div>
+      <div id="tracking-daily" class="mt-4"></div>
+      <div class="grid md:grid-cols-2 gap-6 mt-6">
+        <div>
+          <h4 class="font-semibold mb-2" style="color:var(--navy)">Top pages (30d)</h4>
+          <div id="tracking-pages" class="text-sm space-y-1"></div>
+        </div>
+        <div>
+          <h4 class="font-semibold mb-2" style="color:var(--navy)">Top referrers (30d)</h4>
+          <div id="tracking-refs" class="text-sm space-y-1"></div>
+        </div>
+      </div>
+    </div>
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8 overflow-x-auto">
       <h3 class="text-xl font-bold mb-4" style="color:var(--navy)">All users</h3>
       <table class="w-full text-sm">
@@ -1389,6 +1402,41 @@
           '</td><td class="py-2">'+plan+'</td></tr>';
       }).join("") || '<tr><td class="py-4 text-slate-400">No users yet.</td></tr>';
     });
+    api("/api/admin/tracking").then(function(res){
+      if (!res.ok) {
+        $("tracking-stats").textContent = "No tracking data yet.";
+        return;
+      }
+      var t = res.body;
+      function fmt(s) { return s.views + " views · " + s.visitors + " visitors"; }
+      var cards = [
+        ["Last hour", fmt(t.last_hour)],
+        ["Today", fmt(t.today)],
+        ["Last 7 days", fmt(t.last_7d)],
+        ["Last 30 days", fmt(t.last_30d)],
+      ];
+      $("tracking-stats").innerHTML = '<div class="grid grid-cols-2 md:grid-cols-4 gap-3">' +
+        cards.map(function(c){
+          return '<div class="rounded-lg border border-slate-200 p-3"><div class="text-xs text-slate-500">'+c[0]+
+            '</div><div class="font-bold mt-1" style="color:var(--navy)">'+c[1]+'</div></div>';
+        }).join("") + '</div>';
+      var maxV = Math.max.apply(null, t.daily.map(function(d){ return d.views; }).concat([1]));
+      $("tracking-daily").innerHTML = '<div class="flex items-end gap-1" style="height:80px">' +
+        t.daily.map(function(d){
+          var h = Math.max(2, Math.round(d.views / maxV * 76));
+          return '<div class="flex-1 rounded-t" style="height:'+h+'px;background:var(--navy);min-width:8px" title="'+d.date+': '+d.views+' views"></div>';
+        }).join("") + '</div><div class="flex gap-1 text-xs text-slate-400 mt-1">' +
+        t.daily.map(function(d){
+          return '<div class="flex-1 text-center" style="min-width:8px">'+d.date+'</div>';
+        }).join("") + '</div>';
+      $("tracking-pages").innerHTML = (t.top_pages || []).map(function(p){
+        return '<div class="flex justify-between py-1 border-b border-slate-100"><span class="font-mono text-xs">'+escapeHtml(p.path)+'</span><span class="font-semibold">'+p.views+'</span></div>';
+      }).join("") || '<div class="text-slate-400">No data yet.</div>';
+      $("tracking-refs").innerHTML = (t.top_referrers || []).map(function(r){
+        var ref = r.referrer.length > 40 ? r.referrer.slice(0,40)+"…" : r.referrer;
+        return '<div class="flex justify-between py-1 border-b border-slate-100"><span class="text-xs">'+escapeHtml(ref)+'</span><span class="font-semibold">'+r.views+'</span></div>';
+      }).join("") || '<div class="text-slate-400">No data yet.</div>';
+    });
   }
 
   function openAuth(mode, claimId){
@@ -1509,6 +1557,20 @@
   })();
 
   refreshMe();
+})();
+
+/* ---------- page view tracking (Coe 2026-10-10) ---------- */
+(function(){
+  try {
+    fetch("/api/track", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        path: window.location.pathname,
+        referrer: document.referrer || ""
+      })
+    }).catch(function(){});
+  } catch(e) {}
 })();
 </script>
 </body>
