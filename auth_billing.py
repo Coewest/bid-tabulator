@@ -142,6 +142,7 @@ def init_db():
         status TEXT NOT NULL DEFAULT 'pending',
         token TEXT UNIQUE,
         signed_at TEXT,
+        signed_name TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_lien_waivers_draw ON lien_waivers(draw_id);
@@ -160,6 +161,10 @@ def init_db():
     );
     CREATE INDEX IF NOT EXISTS idx_company_services_company ON company_services(company_id);
     """)
+    # Migration: Get-Paid lien_waivers signed_name (DBs created before 2026-10-11)
+    wcols = [r[1] for r in db.execute("PRAGMA table_info(lien_waivers)")]
+    if "signed_name" not in wcols:
+        db.execute("ALTER TABLE lien_waivers ADD COLUMN signed_name TEXT NOT NULL DEFAULT ''")
     # Migration: company profile fields
     cols = [r[1] for r in db.execute("PRAGMA table_info(users)")]
     for col in ("company_name", "contact_name", "phone"):
