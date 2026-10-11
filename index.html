@@ -6,6 +6,9 @@
 <title>Bid Tabulator — Level Sub Bids in Minutes</title>
 <meta name="description" content="Upload subcontractor bids. Get a side-by-side leveled comparison in minutes." />
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <style>
   :root { --navy:#102a43; --navy-deep:#071b2e; --orange:#e56a2b; --orange-dark:#bd4c14; }
   body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
@@ -164,8 +167,13 @@
         <p id="results-meta" class="text-slate-500 text-sm"></p>
       </div>
       <div class="flex gap-2">
+        <select id="export-format" class="px-3 py-2.5 rounded-lg border border-slate-300 text-slate-600 font-semibold">
+          <option value="csv">CSV</option>
+          <option value="xlsx">Excel</option>
+          <option value="pdf">PDF</option>
+        </select>
         <button id="export-btn" class="px-5 py-2.5 rounded-lg font-semibold text-white"
-                style="background:var(--navy)">⬇ Export CSV</button>
+                style="background:var(--navy)">⬇ Export</button>
         <button id="start-over" class="px-5 py-2.5 rounded-lg font-semibold border border-slate-300 text-slate-600">Start over</button>
       </div>
     </div>
@@ -199,7 +207,7 @@
         <p class="text-sm mt-1" style="color:#b9cbd6">A normalized side-by-side with math verified, exclusions and gaps flagged.</p></div>
       <div><div class="font-mono text-sm mb-2" style="color:#f58b53">03</div>
         <h3 class="font-bold text-lg">Award with confidence</h3>
-        <p class="text-sm mt-1" style="color:#b9cbd6">Adjust the leveling, export to CSV, and carry the right number.</p></div>
+        <p class="text-sm mt-1" style="color:#b9cbd6">Adjust the leveling, export to CSV, Excel, or PDF, and carry the right number.</p></div>
     </div>
   </section>
 
@@ -334,7 +342,7 @@
   <div class="modal-backdrop absolute inset-0" data-close-paywall></div>
   <div class="relative bg-white rounded-xl shadow-xl p-8 w-full max-w-md text-center">
     <h3 class="font-bold text-2xl" style="color:var(--navy)">You've used your free tabulation</h3>
-    <p class="text-slate-500 mt-2">Subscribe for unlimited bid tabulations, saved history, and CSV exports.</p>
+    <p class="text-slate-500 mt-2">Subscribe for unlimited bid tabulations, saved history, and CSV/Excel/PDF exports.</p>
     <div class="flex justify-center gap-2 mt-4" role="group" aria-label="Billing interval">
       <button id="paywall-monthly" class="px-4 py-2 rounded-lg text-sm font-semibold border-2" style="border-color:var(--orange);color:var(--navy)">Monthly — $129/mo</button>
       <button id="paywall-annual" class="px-4 py-2 rounded-lg text-sm font-semibold border-2 border-slate-200 text-slate-500">Annual — $1,290/yr <span class="text-xs">(2 mo free)</span></button>
@@ -1040,12 +1048,11 @@
     if (e.key==="Escape") modal.classList.add("hidden");
   });
 
-  /* ---------- export ---------- */
-  $("export-btn").addEventListener("click", function(){
+  /* ---------- export (CSV / Excel / PDF) ---------- */
+  function buildExportRows() {
     var d=state.data, n=d.bidders.length;
-    function q(s){ s=String(s==null?"":s); return '"'+s.replace(/"/g,'""')+'"'; }
-    var lines=[];
-    lines.push(["Scope item","Qty","Unit"].concat(d.bidders.map(function(_,b){return state.names[b];})).map(q).join(","));
+    var header=["Scope item","Qty","Unit"].concat(d.bidders.map(function(_,b){return state.names[b];}));
+    var rows=[header];
     d.items.forEach(function(it){
       var row=[it.description, it.qty==null?"":it.qty, it.unit||""];
       it.values.forEach(function(v,bi){
@@ -1054,21 +1061,51 @@
         else if (v.status==="included") row.push("Included");
         else row.push("");
       });
-      lines.push(row.map(q).join(","));
+      rows.push(row);
     });
     function totRow(label, arr){
       var row=[label,"",""];
       for (var bi=0;bi<n;bi++) row.push(arr[bi]==null?"":arr[bi].toFixed(2));
-      lines.push(row.map(q).join(","));
+      rows.push(row);
     }
     var calc=[]; for (var bi=0;bi<n;bi++) calc.push(calcTotal(bi));
     totRow("Submitted total", d.submitted_totals);
     totRow("Leveled total", calc);
-    var blob=new Blob([lines.join("\r\n")],{type:"text/csv"});
+    return rows;
+  }
+  function downloadBlob(blob, filename) {
     var a=document.createElement("a");
     a.href=URL.createObjectURL(blob);
-    a.download="leveled-bids.csv"; a.click();
+    a.download=filename; a.click();
     setTimeout(function(){URL.revokeObjectURL(a.href);},2000);
+  }
+  $("export-btn").addEventListener("click", function(){
+    var format=$("export-format").value;
+    var rows=buildExportRows();
+    if (format==="csv") {
+      function q(s){ s=String(s==null?"":s); return '"'+s.replace(/"/g,'""')+'"'; }
+      var lines=rows.map(function(r){ return r.map(q).join(","); });
+      downloadBlob(new Blob([lines.join("\r\n")],{type:"text/csv"}), "leveled-bids.csv");
+    } else if (format==="xlsx") {
+      var ws=XLSX.utils.aoa_to_sheet(rows);
+      ws["!cols"]=[{wch:40},{wch:10},{wch:10}];
+      for (var i=0;i<state.data.bidders.length;i++) ws["!cols"].push({wch:16});
+      var wb=XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Leveled Bids");
+      XLSX.writeFile(wb, "leveled-bids.xlsx");
+    } else if (format==="pdf") {
+      var doc=new window.jspdf.jsPDF({orientation:"landscape"});
+      doc.setFontSize(14);
+      doc.text("Leveled Bid Tabulation", 14, 16);
+      doc.autoTable({
+        head:[rows[0]],
+        body:rows.slice(1),
+        startY:22,
+        styles:{fontSize:8},
+        headStyles:{fillColor:[16,42,67]}
+      });
+      doc.save("leveled-bids.pdf");
+    }
   });
 
   $("start-over").addEventListener("click", function(){
