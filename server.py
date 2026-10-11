@@ -852,7 +852,22 @@ def extract_tab_from_rows(data, col_x, filename):
         else:
             warnings.append("bidder names not found - please enter them manually")
     else:
-        warnings.append("no bidder name row detected - please enter bidder names manually")
+        # No name row above header — check if header itself has bidder names
+        # (e.g. CSV with "Acme Construction" as column header).
+        # Coe 2026-10-10: bidders-as-columns CSV was misread as single bidder.
+        for gi, (tc, rc) in enumerate(groups):
+            if tc < len(header):
+                cell = (header[tc] or "").strip()
+                # Skip generic headers like "Total", "Amount", "Bid"
+                hn = norm_desc(cell)
+                if cell and len(cell) > 2 and hn not in ("rate", "unit price", "price", "total", "amount", "extended", "bid"):
+                    bidder_names[gi], bidder_locs[gi] = _split_name(cell)
+        if all(bidder_names):
+            name_conf = "high"
+        elif any(bidder_names):
+            name_conf = "medium"
+        else:
+            warnings.append("no bidder name row detected - please enter bidder names manually")
 
     for gi in range(n_bidders):
         if not bidder_names[gi]:
