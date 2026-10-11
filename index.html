@@ -2513,7 +2513,16 @@
   var gpDemoBtn = $("gp-demo-btn");
   if (gpDemoBtn) gpDemoBtn.addEventListener("click", openGpDemo);
 
-  refreshMe();
+  /* Deep links (Coe 2026-10-11): ?login=1 opens the login modal (if logged out), ?demo=getpaid opens the Get-Paid demo */
+  function handleDeepLinks(){
+    try {
+      var qp = new URLSearchParams(window.location.search);
+      if (qp.get("demo") === "getpaid") { openGpDemo(); }
+      else if (qp.get("login") === "1" && !authUser) { openAuth("login"); }
+    } catch(e) {}
+  }
+
+  refreshMe().then(handleDeepLinks, handleDeepLinks);
 })();
 
 /* ---------- page view tracking (Coe 2026-10-10) ---------- */
