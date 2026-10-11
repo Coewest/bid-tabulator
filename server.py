@@ -15,11 +15,14 @@ import io
 import json
 import os
 import re
+import secrets
 import tempfile
+from datetime import datetime, timezone
 
-from flask import Flask, request, jsonify, send_from_directory, session
+from flask import Flask, request, jsonify, send_from_directory, session, g
 
 import auth_billing
+from auth_billing import get_db, getpaid_required
 
 app = Flask(__name__)
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -1405,6 +1408,12 @@ def index():
     return send_from_directory(BASE, "index.html")
 
 
+@app.route("/w/<token>")
+def waiver_sign_page(token):
+    """Public waiver signing page — served by the SPA (client renders from /api/waiver/<token>)."""
+    return send_from_directory(BASE, "index.html")
+
+
 @app.route("/api/health")
 def health():
     return jsonify(ok=True)
@@ -1744,6 +1753,550 @@ def upload():
     except Exception:
         pass  # never break parsing because of persistence
     return resp
+
+
+# ---------------------------------------------------------------- Get-Paid suite
+#
+# Progress-billing + lien-waiver tracking for GCs, billed as an add-on service
+# ($99/mo). Every endpoint here (except the two PUBLIC waiver endpoints) is
+# gated by getpaid_required: logged in AND getpaid service active, else 402
+# {error:"subscription_required"}.
+#
+# LEGAL LINE (load-bearing): these endpoints store whatever waiver_kind /
+# waiver_scope the USER selects. Nothing here suggests which waiver type to
+# use, sets defaults for them, validates them, or interprets state law.
+# Keep it that way.
+#
+# company_id = users.id: this app has no companies table; one account = one
+# company. If a companies table ever appears, swap g.user["id"] for the
+# user's company id here.
+
+def _gp_now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _gp_project(company_id, pid):
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT id, company_id, name, client_name, created_at FROM getpaid_projects"
+            " WHERE id=? AND company_id=?", (pid, company_id)).fetchone()
+        return dict(row) if row else None
+    finally:
+        db.close()
+
+
+def _gp_draw(company_id, did):
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT id, company_id, project_id, draw_number, period_start, period_end,"
+            " status, retainage_pct, notes, created_at FROM pay_draws"
+            " WHERE id=? AND company_id=?", (did, company_id)).fetchone()
+        return dict(row) if row else None
+    finally:
+        db.close()
+
+
+def _gp_draw_lines(did):
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT id, draw_id, description, scheduled_value, pct_complete, created_at"
+            " FROM pay_draw_lines WHERE draw_id=? ORDER BY id", (did,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        db.close()
+
+
+def _gp_draw_waivers(did):
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT id, company_id, draw_id, sub_name, sub_email, waiver_kind,"
+            " waiver_scope, amount, status, token, signed_at, created_at"
+            " FROM lien_waivers WHERE draw_id=? ORDER BY id", (did,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        db.close()
+
+
+def _gp_delete_draw(did):
+    """Delete a draw and its lines + waivers. Caller must own the draw."""
+    db = get_db()
+    try:
+        db.execute("DELETE FROM pay_draw_lines WHERE draw_id=?", (did,))
+        db.execute("DELETE FROM lien_waivers WHERE draw_id=?", (did,))
+        db.execute("DELETE FROM pay_draws WHERE id=?", (did,))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _num(v, name):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number")
+
+
+def register_getpaid_routes(app):
+    # ------------------------------------------------------------ projects
+
+    @app.get("/api/getpaid/projects")
+    @getpaid_required
+    def gp_projects_list():
+        db = get_db()
+        try:
+            rows = db.execute(
+                "SELECT id, company_id, name, client_name, created_at"
+                " FROM getpaid_projects WHERE company_id=? ORDER BY id DESC",
+                (g.user["id"],)).fetchall()
+            return jsonify(projects=[dict(r) for r in rows])
+        finally:
+            db.close()
+
+    @app.post("/api/getpaid/projects")
+    @getpaid_required
+    def gp_projects_create():
+        body = request.get_json(force=True, silent=True) or {}
+        name = (body.get("name") or "").strip()
+        if not name:
+            return jsonify(error="name is required"), 400
+        db = get_db()
+        try:
+            cur = db.execute(
+                "INSERT INTO getpaid_projects (company_id, name, client_name, created_at)"
+                " VALUES (?,?,?,?)",
+                (g.user["id"], name, (body.get("client_name") or "").strip(),
+                 _gp_now()))
+            db.commit()
+            pid = cur.lastrowid
+        finally:
+            db.close()
+        return jsonify(project=_gp_project(g.user["id"], pid)), 201
+
+    @app.get("/api/getpaid/projects/<int:pid>")
+    @getpaid_required
+    def gp_project_get(pid):
+        proj = _gp_project(g.user["id"], pid)
+        if not proj:
+            return jsonify(error="Not found."), 404
+        db = get_db()
+        try:
+            draws = db.execute(
+                "SELECT id, company_id, project_id, draw_number, period_start,"
+                " period_end, status, retainage_pct, notes, created_at"
+                " FROM pay_draws WHERE project_id=? AND company_id=?"
+                " ORDER BY draw_number, id",
+                (pid, g.user["id"])).fetchall()
+            return jsonify(project=proj, draws=[dict(r) for r in draws])
+        finally:
+            db.close()
+
+    @app.put("/api/getpaid/projects/<int:pid>")
+    @getpaid_required
+    def gp_project_put(pid):
+        if not _gp_project(g.user["id"], pid):
+            return jsonify(error="Not found."), 404
+        body = request.get_json(force=True, silent=True) or {}
+        name = (body.get("name") or "").strip()
+        if not name:
+            return jsonify(error="name is required"), 400
+        db = get_db()
+        try:
+            db.execute(
+                "UPDATE getpaid_projects SET name=?, client_name=? WHERE id=? AND company_id=?",
+                (name, (body.get("client_name") or "").strip(), pid, g.user["id"]))
+            db.commit()
+        finally:
+            db.close()
+        return jsonify(project=_gp_project(g.user["id"], pid))
+
+    @app.delete("/api/getpaid/projects/<int:pid>")
+    @getpaid_required
+    def gp_project_delete(pid):
+        if not _gp_project(g.user["id"], pid):
+            return jsonify(error="Not found."), 404
+        db = get_db()
+        try:
+            draw_ids = [r["id"] for r in db.execute(
+                "SELECT id FROM pay_draws WHERE project_id=? AND company_id=?",
+                (pid, g.user["id"])).fetchall()]
+            for did in draw_ids:
+                db.execute("DELETE FROM pay_draw_lines WHERE draw_id=?", (did,))
+                db.execute("DELETE FROM lien_waivers WHERE draw_id=?", (did,))
+            db.execute("DELETE FROM pay_draws WHERE project_id=? AND company_id=?",
+                       (pid, g.user["id"]))
+            db.execute("DELETE FROM getpaid_projects WHERE id=? AND company_id=?",
+                       (pid, g.user["id"]))
+            db.commit()
+        finally:
+            db.close()
+        return jsonify(ok=True)
+
+    # ------------------------------------------------------------ draws
+
+    @app.get("/api/getpaid/projects/<int:pid>/draws")
+    @getpaid_required
+    def gp_draws_list(pid):
+        if not _gp_project(g.user["id"], pid):
+            return jsonify(error="Not found."), 404
+        db = get_db()
+        try:
+            rows = db.execute(
+                "SELECT id, company_id, project_id, draw_number, period_start,"
+                " period_end, status, retainage_pct, notes, created_at"
+                " FROM pay_draws WHERE project_id=? AND company_id=?"
+                " ORDER BY draw_number, id",
+                (pid, g.user["id"])).fetchall()
+            return jsonify(draws=[dict(r) for r in rows])
+        finally:
+            db.close()
+
+    @app.post("/api/getpaid/projects/<int:pid>/draws")
+    @getpaid_required
+    def gp_draws_create(pid):
+        if not _gp_project(g.user["id"], pid):
+            return jsonify(error="Not found."), 404
+        body = request.get_json(force=True, silent=True) or {}
+        try:
+            draw_number = int(body.get("draw_number", 1))
+            retainage_pct = _num(body.get("retainage_pct", 10), "retainage_pct")
+        except (TypeError, ValueError) as e:
+            return jsonify(error=str(e) if isinstance(e, ValueError) else
+                           "draw_number must be an integer"), 400
+        db = get_db()
+        try:
+            cur = db.execute(
+                """INSERT INTO pay_draws
+                   (company_id, project_id, draw_number, period_start, period_end,
+                    status, retainage_pct, notes, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (g.user["id"], pid, draw_number,
+                 body.get("period_start") or None, body.get("period_end") or None,
+                 body.get("status") or "draft", retainage_pct,
+                 body.get("notes") or "", _gp_now()))
+            db.commit()
+            did = cur.lastrowid
+        finally:
+            db.close()
+        return jsonify(draw=_gp_draw(g.user["id"], did)), 201
+
+    @app.get("/api/getpaid/draws/<int:did>")
+    @getpaid_required
+    def gp_draw_get(did):
+        draw = _gp_draw(g.user["id"], did)
+        if not draw:
+            return jsonify(error="Not found."), 404
+        lines = _gp_draw_lines(did)
+        waivers = _gp_draw_waivers(did)
+        scheduled_total = sum((l.get("scheduled_value") or 0) for l in lines)
+        earned_to_date = sum((l.get("scheduled_value") or 0) *
+                             (l.get("pct_complete") or 0) / 100.0 for l in lines)
+        retained_to_date = earned_to_date * (draw.get("retainage_pct") or 0) / 100.0
+        due_this_draw = earned_to_date - retained_to_date
+        return jsonify(draw=draw, lines=lines, waivers=waivers, totals={
+            "scheduled_total": round(scheduled_total, 2),
+            "earned_to_date": round(earned_to_date, 2),
+            "retained_to_date": round(retained_to_date, 2),
+            "due_this_draw": round(due_this_draw, 2),
+        })
+
+    @app.put("/api/getpaid/draws/<int:did>")
+    @getpaid_required
+    def gp_draw_put(did):
+        draw = _gp_draw(g.user["id"], did)
+        if not draw:
+            return jsonify(error="Not found."), 404
+        body = request.get_json(force=True, silent=True) or {}
+        fields = {}
+        if "draw_number" in body:
+            try:
+                fields["draw_number"] = int(body["draw_number"])
+            except (TypeError, ValueError):
+                return jsonify(error="draw_number must be an integer"), 400
+        for k in ("period_start", "period_end", "status", "notes"):
+            if k in body:
+                fields[k] = (body[k] or "").strip() if isinstance(body[k], str) else body[k]
+        if "retainage_pct" in body:
+            try:
+                fields["retainage_pct"] = _num(body["retainage_pct"], "retainage_pct")
+            except ValueError as e:
+                return jsonify(error=str(e)), 400
+        if not fields:
+            return jsonify(draw=draw)
+        sets = ", ".join(f"{k}=?" for k in fields)
+        db = get_db()
+        try:
+            db.execute(f"UPDATE pay_draws SET {sets} WHERE id=? AND company_id=?",
+                       (*fields.values(), did, g.user["id"]))
+            db.commit()
+        finally:
+            db.close()
+        return jsonify(draw=_gp_draw(g.user["id"], did))
+
+    # ------------------------------------------------------------ draw lines
+
+    @app.post("/api/getpaid/draws/<int:did>/lines")
+    @getpaid_required
+    def gp_lines_create(did):
+        if not _gp_draw(g.user["id"], did):
+            return jsonify(error="Not found."), 404
+        body = request.get_json(force=True, silent=True) or {}
+        description = (body.get("description") or "").strip()
+        if not description:
+            return jsonify(error="description is required"), 400
+        try:
+            scheduled_value = _num(body.get("scheduled_value", 0), "scheduled_value")
+            pct_complete = _num(body.get("pct_complete", 0), "pct_complete")
+        except ValueError as e:
+            return jsonify(error=str(e)), 400
+        db = get_db()
+        try:
+            cur = db.execute(
+                "INSERT INTO pay_draw_lines (draw_id, description, scheduled_value,"
+                " pct_complete, created_at) VALUES (?,?,?,?,?)",
+                (did, description, scheduled_value, pct_complete, _gp_now()))
+            db.commit()
+            lid = cur.lastrowid
+            row = db.execute(
+                "SELECT id, draw_id, description, scheduled_value, pct_complete, created_at"
+                " FROM pay_draw_lines WHERE id=?", (lid,)).fetchone()
+        finally:
+            db.close()
+        return jsonify(line=dict(row)), 201
+
+    @app.put("/api/getpaid/lines/<int:lid>")
+    @getpaid_required
+    def gp_line_put(lid):
+        db = get_db()
+        try:
+            row = db.execute(
+                "SELECT l.id, l.description, l.scheduled_value, l.pct_complete,"
+                " l.created_at, d.company_id"
+                " FROM pay_draw_lines l JOIN pay_draws d ON d.id=l.draw_id"
+                " WHERE l.id=?", (lid,)).fetchone()
+            if not row or row["company_id"] != g.user["id"]:
+                return jsonify(error="Not found."), 404
+            body = request.get_json(force=True, silent=True) or {}
+            fields = {}
+            if "description" in body:
+                d = (body["description"] or "").strip()
+                if not d:
+                    return jsonify(error="description cannot be empty"), 400
+                fields["description"] = d
+            for k in ("scheduled_value", "pct_complete"):
+                if k in body:
+                    try:
+                        fields[k] = _num(body[k], k)
+                    except ValueError as e:
+                        return jsonify(error=str(e)), 400
+            if fields:
+                sets = ", ".join(f"{k}=?" for k in fields)
+                db.execute(f"UPDATE pay_draw_lines SET {sets} WHERE id=?",
+                           (*fields.values(), lid))
+                db.commit()
+            row = db.execute(
+                "SELECT id, draw_id, description, scheduled_value, pct_complete, created_at"
+                " FROM pay_draw_lines WHERE id=?", (lid,)).fetchone()
+            return jsonify(line=dict(row))
+        finally:
+            db.close()
+
+    @app.delete("/api/getpaid/lines/<int:lid>")
+    @getpaid_required
+    def gp_line_delete(lid):
+        db = get_db()
+        try:
+            row = db.execute(
+                "SELECT l.id, d.company_id FROM pay_draw_lines l"
+                " JOIN pay_draws d ON d.id=l.draw_id WHERE l.id=?",
+                (lid,)).fetchone()
+            if not row or row["company_id"] != g.user["id"]:
+                return jsonify(error="Not found."), 404
+            db.execute("DELETE FROM pay_draw_lines WHERE id=?", (lid,))
+            db.commit()
+        finally:
+            db.close()
+        return jsonify(ok=True)
+
+    # ------------------------------------------------------------ lien waivers
+
+    @app.post("/api/getpaid/draws/<int:did>/waivers")
+    @getpaid_required
+    def gp_waivers_create(did):
+        if not _gp_draw(g.user["id"], did):
+            return jsonify(error="Not found."), 404
+        body = request.get_json(force=True, silent=True) or {}
+        sub_name = (body.get("sub_name") or "").strip()
+        if not sub_name:
+            return jsonify(error="sub_name is required"), 400
+        try:
+            amount = _num(body.get("amount", 0), "amount")
+        except ValueError as e:
+            return jsonify(error=str(e)), 400
+        # NOTE: waiver_kind / waiver_scope are stored exactly as the user
+        # selects. No defaults, no suggestions, no legal interpretation.
+        db = get_db()
+        try:
+            cur = db.execute(
+                """INSERT INTO lien_waivers
+                   (company_id, draw_id, sub_name, sub_email, waiver_kind,
+                    waiver_scope, amount, status, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                (g.user["id"], did, sub_name, (body.get("sub_email") or "").strip(),
+                 (body.get("waiver_kind") or "").strip(),
+                 (body.get("waiver_scope") or "").strip(),
+                 amount, "pending", _gp_now()))
+            db.commit()
+            wid = cur.lastrowid
+            row = db.execute(
+                "SELECT id, company_id, draw_id, sub_name, sub_email, waiver_kind,"
+                " waiver_scope, amount, status, token, signed_at, created_at"
+                " FROM lien_waivers WHERE id=?", (wid,)).fetchone()
+        finally:
+            db.close()
+        return jsonify(waiver=dict(row)), 201
+
+    @app.put("/api/getpaid/waivers/<int:wid>")
+    @getpaid_required
+    def gp_waiver_put(wid):
+        db = get_db()
+        try:
+            row = db.execute(
+                "SELECT id FROM lien_waivers WHERE id=? AND company_id=?",
+                (wid, g.user["id"])).fetchone()
+            if not row:
+                return jsonify(error="Not found."), 404
+            body = request.get_json(force=True, silent=True) or {}
+            fields = {}
+            for k in ("sub_name", "sub_email", "waiver_kind", "waiver_scope"):
+                # stored as the user provides; never interpreted here.
+                if k in body:
+                    fields[k] = (body[k] or "").strip() if isinstance(body[k], str) else body[k]
+            if "sub_name" in fields and not fields["sub_name"]:
+                return jsonify(error="sub_name cannot be empty"), 400
+            for k in ("amount",):
+                if k in body:
+                    try:
+                        fields[k] = _num(body[k], k)
+                    except ValueError as e:
+                        return jsonify(error=str(e)), 400
+            if "status" in body and isinstance(body["status"], str):
+                fields["status"] = body["status"].strip() or "pending"
+            if fields:
+                sets = ", ".join(f"{k}=?" for k in fields)
+                db.execute(f"UPDATE lien_waivers SET {sets} WHERE id=?",
+                           (*fields.values(), wid))
+                db.commit()
+            row = db.execute(
+                "SELECT id, company_id, draw_id, sub_name, sub_email, waiver_kind,"
+                " waiver_scope, amount, status, token, signed_at, created_at"
+                " FROM lien_waivers WHERE id=?", (wid,)).fetchone()
+            return jsonify(waiver=dict(row))
+        finally:
+            db.close()
+
+    @app.delete("/api/getpaid/waivers/<int:wid>")
+    @getpaid_required
+    def gp_waiver_delete(wid):
+        db = get_db()
+        try:
+            row = db.execute(
+                "SELECT id FROM lien_waivers WHERE id=? AND company_id=?",
+                (wid, g.user["id"])).fetchone()
+            if not row:
+                return jsonify(error="Not found."), 404
+            db.execute("DELETE FROM lien_waivers WHERE id=?", (wid,))
+            db.commit()
+        finally:
+            db.close()
+        return jsonify(ok=True)
+
+    @app.post("/api/getpaid/waivers/<int:wid>/send-link")
+    @getpaid_required
+    def gp_waiver_send_link(wid):
+        db = get_db()
+        try:
+            row = db.execute(
+                "SELECT id, token FROM lien_waivers WHERE id=? AND company_id=?",
+                (wid, g.user["id"])).fetchone()
+            if not row:
+                return jsonify(error="Not found."), 404
+            token = row["token"]
+            if not token:
+                # generate a secure random token, retry on the rare collision
+                for _ in range(5):
+                    token = secrets.token_urlsafe(24)
+                    try:
+                        db.execute("UPDATE lien_waivers SET token=? WHERE id=?",
+                                   (token, wid))
+                        db.commit()
+                        break
+                    except Exception:
+                        db.rollback()
+                        token = None
+                if not token:
+                    return jsonify(error="Could not generate link, try again."), 500
+            return jsonify(url=f"/w/{token}")
+        finally:
+            db.close()
+
+    # ------------------------------------------- PUBLIC waiver endpoints
+
+    @app.get("/api/waiver/<token>")
+    def waiver_public_get(token):
+        """Public: show the waiver details to the signer. No auth."""
+        db = get_db()
+        try:
+            row = db.execute(
+                """SELECT w.sub_name, w.amount, w.waiver_kind, w.waiver_scope,
+                          w.status, w.signed_at, w.token,
+                          p.name AS project_name, d.draw_number
+                   FROM lien_waivers w
+                   JOIN pay_draws d ON d.id=w.draw_id
+                   JOIN getpaid_projects p ON p.id=d.project_id
+                   WHERE w.token=?""", (token,)).fetchone()
+        finally:
+            db.close()
+        if not row:
+            return jsonify(error="Link not found or expired."), 404
+        return jsonify(sub_name=row["sub_name"], amount=row["amount"],
+                       waiver_kind=row["waiver_kind"],
+                       waiver_scope=row["waiver_scope"],
+                       project_name=row["project_name"],
+                       draw_number=row["draw_number"],
+                       status=row["status"])
+
+    @app.post("/api/waiver/<token>/sign")
+    def waiver_public_sign(token):
+        """Public: record the sub's signature. Single-use."""
+        body = request.get_json(force=True, silent=True) or {}
+        signed_name = (body.get("signed_name") or "").strip()
+        if not signed_name:
+            return jsonify(error="signed_name is required"), 400
+        db = get_db()
+        try:
+            row = db.execute(
+                "SELECT id, status FROM lien_waivers WHERE token=?",
+                (token,)).fetchone()
+            if not row:
+                return jsonify(error="Link not found or expired."), 404
+            if row["status"] == "signed":
+                return jsonify(error="already_signed"), 409
+            signed_at = _gp_now()
+            db.execute("UPDATE lien_waivers SET status='signed', signed_at=?"
+                       " WHERE id=?", (signed_at, row["id"]))
+            db.commit()
+        finally:
+            db.close()
+        # NOTE: the spec has no signed_name column; the typed name is
+        # acknowledged as the signature act but not persisted.
+        return jsonify(ok=True, signed_at=signed_at)
+
+
+register_getpaid_routes(app)
 
 
 if __name__ == "__main__":
