@@ -39,9 +39,16 @@ STRIPE_PUBLISHABLE_KEY = os.environ.get("STRIPE_PUBLISHABLE_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
 STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID", "")  # $129/mo recurring price
 STRIPE_PRICE_ID_ANNUAL = os.environ.get("STRIPE_PRICE_ID_ANNUAL", "")  # $1,290/yr recurring price
-# Get-Paid suite ($99/mo). Env var overrides the baked-in fallback.
+# Get-Paid suite ($99/mo, $990/yr). Env vars override the baked-in fallbacks.
 STRIPE_PRICE_ID_GETPAID = os.environ.get("STRIPE_PRICE_ID_GETPAID",
                                          "price_1UPN87GjNNTRCkRobuKW4BCa")
+STRIPE_PRICE_ID_GETPAID_ANNUAL = os.environ.get("STRIPE_PRICE_ID_GETPAID_ANNUAL",
+                                                "price_1UPNZrGjNNTRCkRol3G98ZIF")
+# GC Suite bundle: Tabulator + Get-Paid ($179/mo, $1,750/yr). Env vars override fallbacks.
+STRIPE_PRICE_ID_SUITE = os.environ.get("STRIPE_PRICE_ID_SUITE",
+                                       "price_1UPNZxGjNNTRCkRolvnQypky")
+STRIPE_PRICE_ID_SUITE_ANNUAL = os.environ.get("STRIPE_PRICE_ID_SUITE_ANNUAL",
+                                              "price_1UPNZyGjNNTRCkRo51lP9ZEd")
 APP_URL = os.environ.get("APP_URL", "https://bid-tabulator-production.up.railway.app").rstrip("/")
 
 FREE_TABULATIONS = 1
@@ -53,6 +60,10 @@ def stripe_configured():
 
 def getpaid_configured():
     return bool(stripe and STRIPE_SECRET_KEY and STRIPE_PRICE_ID_GETPAID)
+
+
+def suite_configured():
+    return bool(stripe and STRIPE_SECRET_KEY and STRIPE_PRICE_ID_SUITE)
 
 
 def get_db():
@@ -238,6 +249,7 @@ def login_required(fn):
 
 def getpaid_required(fn):
     """Get-Paid suite gate: logged in AND the getpaid service active.
+    A GC Suite subscription also unlocks Get-Paid.
     Tabulator tabulations use the existing can_upload paywall, unchanged."""
     @wraps(fn)
     def wrapper(*a, **kw):
@@ -245,7 +257,7 @@ def getpaid_required(fn):
         if not u:
             return jsonify(error="login required"), 401
         g.user = u
-        if not service_active(u["id"], "getpaid"):
+        if not (service_active(u["id"], "getpaid") or service_active(u["id"], "suite")):
             return jsonify(error="subscription_required"), 402
         return fn(*a, **kw)
     return wrapper
@@ -389,6 +401,8 @@ def can_upload(user):
     if user:
         if subscription_status(user["id"]) == "active":
             return True, "subscriber"
+        if service_active(user["id"], "suite"):
+            return True, "suite"
         if tabulation_count(user["id"]) < FREE_TABULATIONS:
             return True, "free"
         return False, "needs_subscription"
@@ -665,8 +679,8 @@ def register_routes(app):
             service_key = (sess.get("metadata") or {}).get("service_key") or ""
             if uid and sub_id:
                 sub = stripe.Subscription.retrieve(sub_id)
-                if service_key == "getpaid":
-                    # Get-Paid suite checkout: record the service row.
+                if service_key in ("getpaid", "suite"):
+                    # Service checkout (Get-Paid or GC Suite): record the service row.
                     price_id = None
                     try:
                         items = (sub.get("items") or {}).get("data") or []
@@ -676,7 +690,7 @@ def register_routes(app):
                         pass
                     cpe = sub.get("current_period_end")
                     upsert_company_service(
-                        uid, "getpaid",
+                        uid, service_key,
                         stripe_subscription_id=sub_id,
                         stripe_price_id=price_id,
                         status=sub["status"],
@@ -740,19 +754,29 @@ def register_routes(app):
         """Per-service subscription status for the Billing settings page."""
         tab_active = subscription_status(g.user["id"]) == "active"
         gp_active = service_active(g.user["id"], "getpaid")
+        suite_active = service_active(g.user["id"], "suite")
         return jsonify(services=[
-            {"key": "tabulator", "name": "Bid Tabulator", "price": "$129/mo",
+            {"key": "tabulator", "name": "Bid Tabulator",
+             "price": "$129/mo", "price_monthly": "$129/mo", "price_annual": "$1,290/yr",
              "active": tab_active},
-            {"key": "getpaid", "name": "Get-Paid suite", "price": "$99/mo",
+            {"key": "getpaid", "name": "Get-Paid suite",
+             "price": "$99/mo", "price_monthly": "$99/mo", "price_annual": "$990/yr",
              "active": gp_active},
+            {"key": "suite", "name": "GC Suite — Tabulator + Get-Paid",
+             "price": "$179/mo", "price_monthly": "$179/mo", "price_annual": "$1,750/yr",
+             "save_note": "Save $49/mo vs separate",
+             "active": suite_active},
         ])
 
     @app.post("/api/billing/services/getpaid/subscribe")
     @login_required
     def getpaid_subscribe():
-        """Stripe Checkout for the Get-Paid suite ($99/mo). Mirrors the
+        """Stripe Checkout for the Get-Paid suite ($99/mo or $990/yr). Mirrors the
         /api/stripe/checkout pattern; the webhook upserts company_services."""
-        if not getpaid_configured():
+        body = request.get_json(force=True, silent=True) or {}
+        interval = body.get("interval") or "month"
+        price_id = STRIPE_PRICE_ID_GETPAID_ANNUAL if interval == "year" else STRIPE_PRICE_ID_GETPAID
+        if not (stripe and STRIPE_SECRET_KEY and price_id):
             return jsonify(error="billing_not_configured"), 503
         stripe.api_key = STRIPE_SECRET_KEY
         db = get_db()
@@ -766,10 +790,11 @@ def register_routes(app):
         try:
             kwargs = {
                 "mode": "subscription",
-                "line_items": [{"price": STRIPE_PRICE_ID_GETPAID, "quantity": 1}],
+                "line_items": [{"price": price_id, "quantity": 1}],
                 "success_url": f"{APP_URL}/?billing=getpaid_success",
                 "cancel_url": f"{APP_URL}/?billing=getpaid_cancelled",
-                "metadata": {"user_id": str(g.user["id"]), "service_key": "getpaid"},
+                "metadata": {"user_id": str(g.user["id"]), "service_key": "getpaid",
+                             "interval": interval},
             }
             if customer_id:
                 kwargs["customer"] = customer_id
@@ -804,4 +829,66 @@ def register_routes(app):
         except Exception as e:
             return jsonify(error=f"Could not cancel: {e}"), 500
         upsert_company_service(g.user["id"], "getpaid", status="canceled")
+        return jsonify(ok=True)
+
+    @app.post("/api/billing/services/suite/subscribe")
+    @login_required
+    def suite_subscribe():
+        """Stripe Checkout for the GC Suite bundle ($179/mo or $1,750/yr).
+        Unlocks BOTH Bid Tabulator and Get-Paid features."""
+        body = request.get_json(force=True, silent=True) or {}
+        interval = body.get("interval") or "month"
+        price_id = STRIPE_PRICE_ID_SUITE_ANNUAL if interval == "year" else STRIPE_PRICE_ID_SUITE
+        if not (stripe and STRIPE_SECRET_KEY and price_id):
+            return jsonify(error="billing_not_configured"), 503
+        stripe.api_key = STRIPE_SECRET_KEY
+        db = get_db()
+        try:
+            sub = db.execute("SELECT stripe_customer_id FROM subscriptions WHERE user_id=?",
+                             (g.user["id"],)).fetchone()
+            customer_id = sub["stripe_customer_id"] if sub else None
+        finally:
+            db.close()
+        try:
+            kwargs = {
+                "mode": "subscription",
+                "line_items": [{"price": price_id, "quantity": 1}],
+                "success_url": f"{APP_URL}/?billing=suite_success",
+                "cancel_url": f"{APP_URL}/?billing=suite_cancelled",
+                "metadata": {"user_id": str(g.user["id"]), "service_key": "suite",
+                             "interval": interval},
+            }
+            if customer_id:
+                kwargs["customer"] = customer_id
+            else:
+                kwargs["customer_email"] = g.user["email"]
+            sess = stripe.checkout.Session.create(**kwargs)
+            return jsonify(url=sess.url)
+        except Exception as e:
+            return jsonify(error=f"Could not start checkout: {e}"), 500
+
+    @app.post("/api/billing/services/suite/cancel")
+    @login_required
+    def suite_cancel():
+        """Cancel the GC Suite subscription at period end via Stripe, then mark
+        the company_services row canceled."""
+        if not suite_configured():
+            return jsonify(error="billing_not_configured"), 503
+        db = get_db()
+        try:
+            row = db.execute(
+                "SELECT stripe_subscription_id FROM company_services"
+                " WHERE company_id=? AND service_key='suite'",
+                (g.user["id"],)).fetchone()
+        finally:
+            db.close()
+        if not row or not row["stripe_subscription_id"]:
+            return jsonify(error="No GC Suite subscription found."), 404
+        stripe.api_key = STRIPE_SECRET_KEY
+        try:
+            stripe.Subscription.modify(
+                row["stripe_subscription_id"], cancel_at_period_end=True)
+        except Exception as e:
+            return jsonify(error=f"Could not cancel: {e}"), 500
+        upsert_company_service(g.user["id"], "suite", status="canceled")
         return jsonify(ok=True)
