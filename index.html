@@ -58,6 +58,7 @@
   thead th.sticky-col { background:#f8fafc; }
   tr.totals-row td.sticky-col { background:#f1f5f9; }
   .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace, monospace; }
+  .dash-tab.active { background:var(--navy); color:#fff; border-color:var(--navy); }
   .modal-backdrop { background:rgba(7,27,46,.55); }
   input[type=text], input[type=number] { outline:none; }
   input[type=text]:focus, input[type=number]:focus { border-color:var(--orange);
@@ -80,7 +81,7 @@
 </nav>
 
 <!-- ============ HERO ============ -->
-<header class="text-white" style="background:var(--navy-deep)">
+<header id="hero" class="text-white" style="background:var(--navy-deep)">
   <div class="max-w-6xl mx-auto px-5 py-12 md:py-16">
     <div class="text-sm font-semibold tracking-wide mb-4" style="color:#f58b53">
       <span class="inline-block w-7 h-[3px] align-middle mr-2" style="background:var(--orange)"></span>
@@ -186,8 +187,8 @@
     </div>
   </section>
 
-  <!-- ============ HOW IT WORKS ============ -->
-  <section class="mt-14 text-white rounded-xl p-8 md:p-10" style="background:var(--navy-deep)">
+  <!-- ============ HOW IT WORKS (landing only) ============ -->
+  <section id="landing-how" class="mt-14 text-white rounded-xl p-8 md:p-10" style="background:var(--navy-deep)">
     <h2 class="text-3xl font-bold">How it works</h2>
     <div class="grid md:grid-cols-3 gap-8 mt-6">
       <div><div class="font-mono text-sm mb-2" style="color:#f58b53">01</div>
@@ -202,7 +203,7 @@
     </div>
   </section>
 
-  <section class="mt-8 grid md:grid-cols-3 gap-6">
+  <section id="landing-cta" class="mt-8 grid md:grid-cols-3 gap-6">
     <div class="md:col-span-2 bg-white rounded-xl border border-slate-200 p-8">
       <h2 class="text-2xl font-bold" style="color:var(--navy)">Rather have us do the first one?</h2>
       <p class="text-slate-500 mt-2">Send us your last bid package — we'll return the leveled comparison free. No signup, no demo call.</p>
@@ -223,13 +224,86 @@
   <div class="w-10 h-1" style="background:var(--orange)"></div>
 </footer>
 
-<!-- ============ DASHBOARD ============ -->
-<section id="dashboard-section" class="hidden bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8 mb-8">
-  <div class="flex items-center justify-between">
-    <h2 class="text-2xl font-bold" style="color:var(--navy)">Your tabulations</h2>
-    <button id="new-tab-btn" class="btn-primary px-5 py-2.5 text-sm">+ New tabulation</button>
+<!-- ============ DASHBOARD (logged-in home) ============ -->
+<section id="dashboard-section" class="hidden mb-8">
+  <div class="flex items-center justify-between flex-wrap gap-3">
+    <h2 class="text-2xl font-bold" style="color:var(--navy)">Dashboard</h2>
+    <div class="flex gap-2 text-sm font-semibold" id="dash-tabs">
+      <button data-dtab="tabs" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">My tabulations</button>
+      <button data-dtab="settings" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">Settings</button>
+      <button data-dtab="admin" id="dash-tab-admin" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200 hidden">Admin</button>
+    </div>
   </div>
-  <div id="tab-list" class="mt-5 space-y-2"></div>
+
+  <!-- Tabulations tab -->
+  <div id="dtab-tabs" class="mt-5 bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
+    <div class="flex items-center justify-between flex-wrap gap-3">
+      <div>
+        <h3 class="text-xl font-bold" style="color:var(--navy)">Your tabulations</h3>
+        <p class="text-sm text-slate-500 mt-1" id="dash-plan-note"></p>
+      </div>
+      <button id="new-tab-btn" class="btn-primary px-5 py-2.5 text-sm">+ New tabulation</button>
+    </div>
+    <div id="tab-list" class="mt-5 space-y-2"></div>
+  </div>
+
+  <!-- Settings tab -->
+  <div id="dtab-settings" class="mt-5 hidden space-y-5">
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
+      <h3 class="text-xl font-bold" style="color:var(--navy)">Company</h3>
+      <div class="grid md:grid-cols-2 gap-4 mt-4">
+        <label class="block"><span class="text-sm font-semibold text-slate-600">Company name</span>
+          <input id="set-company" type="text" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5" placeholder="Acme Construction" /></label>
+        <label class="block"><span class="text-sm font-semibold text-slate-600">Contact name</span>
+          <input id="set-contact" type="text" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5" placeholder="Jane Smith" /></label>
+        <label class="block"><span class="text-sm font-semibold text-slate-600">Phone</span>
+          <input id="set-phone" type="text" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5" placeholder="(555) 123-4567" /></label>
+        <label class="block"><span class="text-sm font-semibold text-slate-600">Email</span>
+          <input id="set-email" type="text" disabled class="mt-1 w-full border border-slate-200 bg-slate-50 rounded-lg px-3 py-2.5 text-slate-500" /></label>
+      </div>
+      <div class="mt-4 flex items-center gap-3">
+        <button id="set-save" class="btn-primary px-5 py-2.5 text-sm">Save changes</button>
+        <span id="set-msg" class="text-sm"></span>
+      </div>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
+      <h3 class="text-xl font-bold" style="color:var(--navy)">Billing</h3>
+      <p class="text-sm text-slate-500 mt-2" id="billing-status"></p>
+      <div class="mt-4 flex gap-3">
+        <button id="billing-subscribe" class="btn-primary px-5 py-2.5 text-sm">Subscribe — $49/mo</button>
+        <button id="billing-portal" class="px-5 py-2.5 text-sm font-semibold border border-slate-300 rounded-lg hidden">Manage billing</button>
+      </div>
+      <p id="billing-msg" class="text-sm text-red-700 mt-3"></p>
+    </div>
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
+      <h3 class="text-xl font-bold" style="color:var(--navy)">Change password</h3>
+      <div class="grid md:grid-cols-2 gap-4 mt-4">
+        <label class="block"><span class="text-sm font-semibold text-slate-600">Current password</span>
+          <input id="pw-current" type="password" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5" /></label>
+        <label class="block"><span class="text-sm font-semibold text-slate-600">New password (8+ characters)</span>
+          <input id="pw-new" type="password" class="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2.5" /></label>
+      </div>
+      <div class="mt-4 flex items-center gap-3">
+        <button id="pw-save" class="btn-primary px-5 py-2.5 text-sm">Update password</button>
+        <span id="pw-msg" class="text-sm"></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Admin tab -->
+  <div id="dtab-admin" class="mt-5 hidden space-y-5">
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4" id="admin-stats"></div>
+    <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8 overflow-x-auto">
+      <h3 class="text-xl font-bold mb-4" style="color:var(--navy)">All users</h3>
+      <table class="w-full text-sm">
+        <thead><tr class="text-left text-slate-400 border-b">
+          <th class="py-2 pr-4">Email</th><th class="py-2 pr-4">Company</th>
+          <th class="py-2 pr-4">Signed up</th><th class="py-2 pr-4">Tabs</th><th class="py-2">Plan</th>
+        </tr></thead>
+        <tbody id="admin-users"></tbody>
+      </table>
+    </div>
+  </div>
 </section>
 
 <!-- ============ AUTH MODAL ============ -->
@@ -995,7 +1069,8 @@
     state={data:null,names:[],adjustments:{},choices:{},frequencies:{},userStatus:{},
            taxBasis:"included",taxRate:0,awardBasis:"base",deductsConfirmed:false,provisional:false};
     pendingTabId=null;
-    hide("save-prompt"); hide("results-section"); hide("confirm-section"); show("upload-section");
+    hide("save-prompt"); hide("results-section"); hide("confirm-section");
+    if (authUser){ renderLoggedInView(); } else { show("upload-section"); }
     window.scrollTo({top:0,behavior:"smooth"});
   });
 
@@ -1041,7 +1116,146 @@
     return api("/api/me").then(function(res){
       authUser = res.body.user || null;
       renderNav();
+      renderLoggedInView();
       return authUser;
+    });
+  }
+
+  // Logged-in users see the dashboard instead of the landing page.
+  function renderLoggedInView(){
+    var loggedIn = !!authUser;
+    ["hero","landing-how","landing-cta"].forEach(function(id){
+      var el = $(id); if (el) el.classList.toggle("hidden", loggedIn);
+    });
+    var up = $("upload-section"); if (up) up.classList.toggle("hidden", loggedIn);
+    if (loggedIn){
+      hide("results-section"); hide("confirm-section"); hide("processing-section");
+      show("dashboard-section");
+      $("dash-tab-admin").classList.toggle("hidden", !authUser.is_admin);
+      switchDashTab("tabs");
+      loadTabulationList();
+      loadSettings();
+      if (authUser.is_admin) loadAdmin();
+    } else {
+      hide("dashboard-section");
+      show("upload-section");
+    }
+  }
+
+  function switchDashTab(name){
+    ["tabs","settings","admin"].forEach(function(t){
+      $("dtab-"+t).classList.toggle("hidden", t!==name);
+    });
+    document.querySelectorAll(".dash-tab").forEach(function(b){
+      b.classList.toggle("active", b.dataset.dtab===name);
+    });
+  }
+  document.querySelectorAll(".dash-tab").forEach(function(b){
+    b.addEventListener("click", function(){ switchDashTab(b.dataset.dtab); });
+  });
+
+  function loadTabulationList(){
+    api("/api/tabulations").then(function(res){
+      if (!res.ok) return;
+      var tabs = res.body.tabulations || [];
+      var planNote = authUser.subscription==="active"
+        ? "Subscribed — unlimited tabulations."
+        : (authUser.free_remaining>0
+            ? "Your first tabulation is free. Subscribe for $49/mo for unlimited."
+            : "Free tabulation used — subscribe for $49/mo to continue.");
+      $("dash-plan-note").textContent = planNote + "  ("+tabs.length+" saved)";
+      $("tab-list").innerHTML = tabs.length ? tabs.map(function(t){
+        var d = new Date(t.created_at*1000).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+        return '<button data-tab="'+t.id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
+          '<span class="font-semibold">'+escapeHtml(t.project_name)+'</span>'+
+          '<span class="text-sm text-slate-400">'+d+' →</span></button>';
+      }).join("") : '<p class="text-slate-500">No tabulations yet — start your first one free.</p>';
+      $("tab-list").querySelectorAll("[data-tab]").forEach(function(b){
+        b.addEventListener("click", function(){ loadTabulation(Number(b.dataset.tab)); });
+      });
+    });
+  }
+
+  function loadSettings(){
+    api("/api/settings").then(function(res){
+      if (!res.ok) return;
+      var s = res.body.settings;
+      $("set-company").value = s.company_name || "";
+      $("set-contact").value = s.contact_name || "";
+      $("set-phone").value = s.phone || "";
+      $("set-email").value = s.email || "";
+      var sub = authUser.subscription === "active";
+      $("billing-status").textContent = sub
+        ? "Active subscription — $49/month, unlimited tabulations."
+        : "No active subscription. Your first tabulation is free; subscribe for unlimited.";
+      $("billing-subscribe").classList.toggle("hidden", sub || !authUser.stripe_configured);
+      $("billing-portal").classList.toggle("hidden", !sub);
+    });
+  }
+  $("set-save").addEventListener("click", function(){
+    $("set-msg").textContent = "";
+    api("/api/settings",{method:"POST",body:JSON.stringify({
+      company_name:$("set-company").value,
+      contact_name:$("set-contact").value,
+      phone:$("set-phone").value
+    })}).then(function(res){
+      $("set-msg").textContent = res.ok ? "Saved." : (res.body.error||"Could not save.");
+      $("set-msg").style.color = res.ok ? "green" : "red";
+    });
+  });
+  $("pw-save").addEventListener("click", function(){
+    $("pw-msg").textContent = "";
+    api("/api/change-password",{method:"POST",body:JSON.stringify({
+      current_password:$("pw-current").value,
+      new_password:$("pw-new").value
+    })}).then(function(res){
+      $("pw-msg").textContent = res.ok ? "Password updated." : (res.body.error||"Could not update.");
+      $("pw-msg").style.color = res.ok ? "green" : "red";
+      if (res.ok){ $("pw-current").value=""; $("pw-new").value=""; }
+    });
+  });
+  $("billing-subscribe").addEventListener("click", function(){
+    $("billing-msg").textContent = "";
+    api("/api/stripe/checkout",{method:"POST"}).then(function(res){
+      if (!res.ok) throw new Error(res.body.error||"Checkout failed");
+      window.location.href = res.body.url;
+    }).catch(function(e){ $("billing-msg").textContent = e.message; });
+  });
+  $("billing-portal").addEventListener("click", function(){
+    api("/api/stripe/portal",{method:"POST"}).then(function(res){
+      if (!res.ok) throw new Error(res.body.error||"Portal failed");
+      window.location.href = res.body.url;
+    }).catch(function(e){ $("billing-msg").textContent = e.message; });
+  });
+
+  function loadAdmin(){
+    api("/api/admin/stats").then(function(res){
+      if (!res.ok) return;
+      var s = res.body.stats;
+      var cards = [
+        ["Total users", s.total_users],
+        ["Tabulations", s.total_tabulations],
+        ["Paying", s.paying_customers],
+        ["MRR", "$"+s.mrr]
+      ];
+      $("admin-stats").innerHTML = cards.map(function(c){
+        return '<div class="bg-white rounded-xl border border-slate-200 p-5"><div class="text-sm text-slate-500">'+c[0]+
+          '</div><div class="text-3xl font-bold mt-1" style="color:var(--navy)">'+c[1]+'</div></div>';
+      }).join("");
+    });
+    api("/api/admin/users").then(function(res){
+      if (!res.ok) return;
+      $("admin-users").innerHTML = res.body.users.map(function(u){
+        var d = new Date(u.created_at*1000).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+        var plan = u.sub_status==="active"
+          ? '<span class="text-green-700 font-semibold">● $49/mo</span>'
+          : '<span class="text-slate-400">free</span>';
+        return '<tr class="border-b border-slate-100"><td class="py-2 pr-4 font-medium">'+escapeHtml(u.email)+
+          '</td><td class="py-2 pr-4">'+escapeHtml(u.company_name||"—")+
+          '</td><td class="py-2 pr-4 text-slate-500">'+d+
+          '</td><td class="py-2 pr-4">'+u.tab_count+
+          '</td><td class="py-2">'+plan+'</td></tr>';
+      }).join("") || '<tr><td class="py-4 text-slate-400">No users yet.</td></tr>';
     });
   }
 
@@ -1104,22 +1318,11 @@
   });
 
   function showDashboard(){
-    api("/api/tabulations").then(function(res){
-      if (!res.ok){ openAuth("login"); return; }
-      var tabs = res.body.tabulations || [];
-      $("tab-list").innerHTML = tabs.length ? tabs.map(function(t){
-        var d = new Date(t.created_at*1000).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
-        return '<button data-tab="'+t.id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
-          '<span class="font-semibold">'+escapeHtml(t.project_name)+'</span>'+
-          '<span class="text-sm text-slate-400">'+d+' →</span></button>';
-      }).join("") : '<p class="text-slate-500">No tabulations yet. Upload a bid package to get started.</p>';
-      $("tab-list").querySelectorAll("[data-tab]").forEach(function(b){
-        b.addEventListener("click", function(){ loadTabulation(Number(b.dataset.tab)); });
-      });
-      hide("upload-section"); hide("results-section"); hide("confirm-section"); hide("processing-section");
-      show("dashboard-section");
-      window.scrollTo({top:0, behavior:"smooth"});
-    });
+    // Dashboard is now the logged-in home view; just refresh the list and switch to the tab.
+    if (!authUser){ openAuth("login"); return; }
+    renderLoggedInView();
+    switchDashTab("tabs");
+    window.scrollTo({top:0, behavior:"smooth"});
   }
   $("new-tab-btn").addEventListener("click", function(){
     hide("dashboard-section"); show("upload-section");
