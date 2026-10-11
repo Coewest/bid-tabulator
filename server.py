@@ -1410,6 +1410,110 @@ def health():
     return jsonify(ok=True)
 
 
+@app.route("/api/track", methods=["POST"])
+def track_page_view():
+    """Record a page view. No auth required. Bots are flagged, not blocked."""
+    from auth_billing import get_db
+    import hashlib, time
+    body = request.get_json(force=True, silent=True) or {}
+    path = (body.get("path") or "/")[:200]
+    referrer = (body.get("referrer") or "")[:500]
+    ua = request.headers.get("User-Agent", "")[:500]
+    # Simple bot detection
+    ua_lower = ua.lower()
+    is_bot = any(b in ua_lower for b in ("bot", "crawler", "spider", "headless", "selenium", "phantom"))
+    # Daily salted visitor hash (no raw IP stored)
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    day = time.strftime("%Y-%m-%d")
+    visitor_hash = hashlib.sha256(f"{ip}|{ua}|{day}|tabulator-salt".encode()).hexdigest()[:16]
+    if is_bot:
+        return jsonify(ok=True, bot=True)
+    db = get_db()
+    try:
+        db.execute(
+            "INSERT INTO page_views (path, referrer, user_agent, visitor_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+            (path, referrer, ua, visitor_hash, int(time.time()))
+        )
+        db.commit()
+    except Exception:
+        pass
+    finally:
+        db.close()
+    return jsonify(ok=True)
+
+
+@app.route("/api/admin/tracking")
+def admin_tracking():
+    """Admin-only: page view stats. Requires admin auth."""
+    from auth_billing import get_db, login_required, admin_required
+    # Use the existing admin decorator pattern
+    import functools
+    from flask import g
+    # Check admin via the existing mechanism
+    auth_header = request.headers.get("Authorization", "")
+    # Simplified: reuse the admin check from auth_billing
+    try:
+        from auth_billing import get_current_user
+        user = get_current_user()
+        if not user or not user.get("is_admin"):
+            return jsonify(error="Admin required"), 403
+    except Exception:
+        return jsonify(error="Admin required"), 403
+    import time
+    now = int(time.time())
+    db = get_db()
+    try:
+        def count_since(seconds):
+            row = db.execute(
+                "SELECT COUNT(*) as c, COUNT(DISTINCT visitor_hash) as u FROM page_views WHERE created_at > ?",
+                (now - seconds,)
+            ).fetchone()
+            return {"views": row["c"], "visitors": row["u"]}
+        stats = {
+            "last_hour": count_since(3600),
+            "today": count_since(86400),
+            "last_7d": count_since(7 * 86400),
+            "last_30d": count_since(30 * 86400),
+            "all_time": count_since(now),
+        }
+        # Top pages (last 30d)
+        top_pages = [
+            {"path": r["path"], "views": r["c"]}
+            for r in db.execute(
+                "SELECT path, COUNT(*) as c FROM page_views WHERE created_at > ? GROUP BY path ORDER BY c DESC LIMIT 10",
+                (now - 30 * 86400,)
+            ).fetchall()
+        ]
+        # Top referrers (last 30d)
+        top_refs = [
+            {"referrer": r["referrer"] or "(direct)", "views": r["c"]}
+            for r in db.execute(
+                "SELECT referrer, COUNT(*) as c FROM page_views WHERE created_at > ? GROUP BY referrer ORDER BY c DESC LIMIT 10",
+                (now - 30 * 86400,)
+            ).fetchall()
+        ]
+        # Daily views (last 14 days) for a simple chart
+        daily = []
+        for i in range(13, -1, -1):
+            day_start = now - (i + 1) * 86400
+            day_end = now - i * 86400
+            row = db.execute(
+                "SELECT COUNT(*) as c, COUNT(DISTINCT visitor_hash) as u FROM page_views WHERE created_at > ? AND created_at <= ?",
+                (day_start, day_end)
+            ).fetchone()
+            daily.append({
+                "date": time.strftime("%m/%d", time.localtime(day_end)),
+                "views": row["c"],
+                "visitors": row["u"],
+            })
+        stats["top_pages"] = top_pages
+        stats["top_referrers"] = top_refs
+        stats["daily"] = daily
+        return jsonify(stats)
+    finally:
+        db.close()
+
+
 def _do_upload():
     """Core parsing logic. Returns a Flask response. Wrapped by upload() for gating."""
     files = request.files.getlist("files")
