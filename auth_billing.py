@@ -79,6 +79,16 @@ def init_db():
         updated_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_tab_user ON tabulations(user_id);
+    CREATE TABLE IF NOT EXISTS page_views (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        path TEXT NOT NULL,
+        referrer TEXT,
+        user_agent TEXT,
+        visitor_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_pv_created ON page_views(created_at);
+    CREATE INDEX IF NOT EXISTS idx_pv_visitor ON page_views(visitor_hash);
     """)
     # Migration: company profile fields
     cols = [r[1] for r in db.execute("PRAGMA table_info(users)")]
