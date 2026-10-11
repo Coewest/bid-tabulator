@@ -79,6 +79,11 @@ def init_db():
     );
     CREATE INDEX IF NOT EXISTS idx_tab_user ON tabulations(user_id);
     """)
+    # Migration: company profile fields
+    cols = [r[1] for r in db.execute("PRAGMA table_info(users)")]
+    for col in ("company_name", "contact_name", "phone"):
+        if col not in cols:
+            db.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
     db.commit()
     db.close()
 
@@ -104,10 +109,30 @@ def current_user():
         return None
     db = get_db()
     try:
-        row = db.execute("SELECT id, email, created_at FROM users WHERE id=?", (uid,)).fetchone()
+        row = db.execute(
+            "SELECT id, email, created_at, company_name, contact_name, phone"
+            " FROM users WHERE id=?", (uid,)).fetchone()
         return dict(row) if row else None
     finally:
         db.close()
+
+
+ADMIN_EMAIL = "coe@clearscopebid.com"
+
+
+def is_admin(user):
+    return bool(user) and user.get("email") == ADMIN_EMAIL
+
+
+def admin_required(fn):
+    @wraps(fn)
+    def wrapper(*a, **kw):
+        u = current_user()
+        if not u or not is_admin(u):
+            return jsonify(error="admin required"), 403
+        g.user = u
+        return fn(*a, **kw)
+    return wrapper
 
 
 def login_required(fn):
@@ -277,11 +302,99 @@ def register_routes(app):
         sub = subscription_status(u["id"])
         return jsonify(user={
             "id": u["id"], "email": u["email"],
+            "company_name": u.get("company_name") or "",
+            "contact_name": u.get("contact_name") or "",
+            "phone": u.get("phone") or "",
+            "is_admin": is_admin(u),
             "subscription": sub,
             "tabulations": tabulation_count(u["id"]),
             "free_remaining": max(0, FREE_TABULATIONS - tabulation_count(u["id"])),
             "stripe_configured": stripe_configured(),
         })
+
+    @app.get("/api/settings")
+    @login_required
+    def settings_get():
+        u = g.user
+        return jsonify(settings={
+            "company_name": u.get("company_name") or "",
+            "contact_name": u.get("contact_name") or "",
+            "phone": u.get("phone") or "",
+            "email": u["email"],
+        })
+
+    @app.post("/api/settings")
+    @login_required
+    def settings_post():
+        body = request.get_json(force=True, silent=True) or {}
+        db = get_db()
+        try:
+            db.execute(
+                "UPDATE users SET company_name=?, contact_name=?, phone=? WHERE id=?",
+                ((body.get("company_name") or "").strip(),
+                 (body.get("contact_name") or "").strip(),
+                 (body.get("phone") or "").strip(),
+                 g.user["id"]))
+            db.commit()
+        finally:
+            db.close()
+        return jsonify(ok=True)
+
+    @app.post("/api/change-password")
+    @login_required
+    def change_password():
+        body = request.get_json(force=True, silent=True) or {}
+        old_pw = body.get("current_password") or ""
+        new_pw = body.get("new_password") or ""
+        if len(new_pw) < 8:
+            return jsonify(error="New password must be at least 8 characters."), 400
+        db = get_db()
+        try:
+            row = db.execute("SELECT password_hash FROM users WHERE id=?",
+                             (g.user["id"],)).fetchone()
+            if not row or not verify_password(old_pw, row["password_hash"]):
+                return jsonify(error="Current password is incorrect."), 401
+            db.execute("UPDATE users SET password_hash=? WHERE id=?",
+                       (hash_password(new_pw), g.user["id"]))
+            db.commit()
+        finally:
+            db.close()
+        return jsonify(ok=True)
+
+    @app.get("/api/admin/users")
+    @admin_required
+    def admin_users():
+        db = get_db()
+        try:
+            rows = db.execute(
+                """SELECT u.id, u.email, u.created_at, u.company_name,
+                          (SELECT COUNT(*) FROM tabulations t WHERE t.user_id=u.id) AS tab_count,
+                          COALESCE(s.status, 'none') AS sub_status
+                   FROM users u
+                   LEFT JOIN subscriptions s ON s.user_id=u.id
+                   ORDER BY u.id DESC""").fetchall()
+            return jsonify(users=[dict(r) for r in rows])
+        finally:
+            db.close()
+
+    @app.get("/api/admin/stats")
+    @admin_required
+    def admin_stats():
+        db = get_db()
+        try:
+            total_users = db.execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
+            total_tabs = db.execute("SELECT COUNT(*) c FROM tabulations").fetchone()["c"]
+            paying = db.execute(
+                "SELECT COUNT(*) c FROM subscriptions WHERE status IN ('active','trialing','past_due')"
+            ).fetchone()["c"]
+            return jsonify(stats={
+                "total_users": total_users,
+                "total_tabulations": total_tabs,
+                "paying_customers": paying,
+                "mrr": paying * 49,
+            })
+        finally:
+            db.close()
 
     @app.get("/api/tabulations")
     @login_required
