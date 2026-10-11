@@ -234,7 +234,7 @@
   </section>
 
   <!-- Competitor pricing comparison (Coe 2026-10-10) -->
-  <section class="max-w-6xl mx-auto px-5 mt-12 mb-8">
+  <section id="landing-competitors" class="max-w-6xl mx-auto px-5 mt-12 mb-8">
     <div class="rounded-2xl p-8 md:p-10" style="background:linear-gradient(135deg,#102a43 0%,#1a3a5c 100%);border-top:6px solid var(--orange)">
       <h2 class="text-2xl md:text-3xl font-bold text-white text-center">Why pay 3x more for the same job?</h2>
       <p class="text-center mt-2" style="color:#b9cbd6">Bid tabulation pricing, per company per month. Tabulator includes unlimited users.</p>
@@ -1255,7 +1255,7 @@
   // Logged-in users see the dashboard instead of the landing page.
   function renderLoggedInView(){
     var loggedIn = !!authUser;
-    ["hero","landing-how","landing-cta"].forEach(function(id){
+    ["hero","landing-how","landing-cta","landing-competitors"].forEach(function(id){
       var el = $(id); if (el) el.classList.toggle("hidden", loggedIn);
     });
     var up = $("upload-section"); if (up) up.classList.toggle("hidden", loggedIn);
