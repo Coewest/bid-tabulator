@@ -1741,17 +1741,13 @@
       '<div class="mt-6 text-4xl font-bold" style="color:var(--navy)">$99<span class="text-base font-semibold text-slate-500">/month</span></div>'+
       '<button id="gp-upsell-subscribe" class="btn-primary px-8 py-3.5 text-lg mt-4">Subscribe — $99/mo</button>'+
       '<p id="gp-upsell-msg" class="text-sm text-red-700 mt-3"></p>'+
+      '<p class="text-sm text-slate-500 mt-3">Need the Tabulator too? <strong>GC Suite</strong> — both products for '+
+      '<strong>$179/mo</strong> (save $49/mo vs separate). <a href="#" id="gp-upsell-suite-link" class="underline font-semibold" style="color:var(--orange)">See billing options</a></p>'+
       '<p class="text-xs text-slate-400 mt-2">Billed separately from your Tabulator subscription. Cancel anytime.</p>'+
       '</div>';
   }
-  function gpSubscribeFlow(){
-    return api("/api/billing/services/getpaid/subscribe",{method:"POST"}).then(function(res){
-      if (!res.ok){
-        if (res.body && res.body.error==="billing_not_configured") throw new Error("billing_not_configured");
-        throw new Error(res.body.error||"Subscribe failed");
-      }
-      window.location.href = res.body.url;
-    });
+  function gpSubscribeFlow(interval){
+    return svcSubscribeFlow("/api/billing/services/getpaid/subscribe", interval||"month");
   }
   function gpWireUpsell(){
     $("gp-upsell-subscribe").addEventListener("click", function(){
@@ -1764,6 +1760,11 @@
           ? "Billing isn\u2019t configured on this account yet — check back soon."
           : e.message;
       });
+    });
+    var suiteLink = $("gp-upsell-suite-link");
+    if (suiteLink) suiteLink.addEventListener("click", function(e){
+      e.preventDefault();
+      switchDashTab("settings");
     });
   }
 
@@ -2218,6 +2219,15 @@
   });
 
   /* ---------- billing services (Settings) ---------- */
+  function svcSubscribeFlow(url, interval){
+    return api(url,{method:"POST", body: JSON.stringify({interval: interval||"month"})}).then(function(res){
+      if (!res.ok){
+        if (res.body && res.body.error==="billing_not_configured") throw new Error("billing_not_configured");
+        throw new Error(res.body.error||"Subscribe failed");
+      }
+      window.location.href = res.body.url;
+    });
+  }
   function loadBillingServices(){
     var el = $("billing-services");
     if (!el || !authUser) return;
@@ -2231,45 +2241,58 @@
         var active = !!s.active;
         var pill = active ? '<span class="gp-pill gp-pill-signed">Active</span>'
                           : '<span class="gp-pill gp-pill-draft">Not subscribed</span>';
+        var prices = escapeHtml(s.price_monthly||s.price||"") +
+          (s.price_annual ? ' <span class="text-slate-400">or</span> '+escapeHtml(s.price_annual) : '');
+        var note = s.save_note ? '<div class="text-xs font-semibold mt-0.5" style="color:var(--orange)">'+escapeHtml(s.save_note)+'</div>' : '';
+        var featured = s.key==="suite" ? ' style="border-color:var(--orange);border-width:2px"' : '';
         var action = "";
-        if (s.key==="getpaid"){
-          action = active
-            ? '<button id="gp-unsubscribe" class="px-4 py-2 text-sm font-semibold border border-slate-300 rounded-lg hover:border-red-400 hover:text-red-600">Unsubscribe</button>'
-            : '<button id="gp-subscribe" class="btn-primary px-4 py-2 text-sm">Subscribe — $99/mo</button>';
-        } else if (s.key==="tabulator"){
-          action = '<span class="text-sm text-slate-500">'+(active?"Managed in Billing above":"Subscribe in Billing above")+'</span>';
+        if (active){
+          if (s.key==="getpaid" || s.key==="suite"){
+            action = '<button data-svc-cancel="'+s.key+'" class="px-4 py-2 text-sm font-semibold border border-slate-300 rounded-lg hover:border-red-400 hover:text-red-600">Unsubscribe</button>';
+          } else {
+            action = '<span class="text-sm text-slate-500">Managed in Billing above</span>';
+          }
+        } else {
+          var subUrl = s.key==="tabulator" ? "/api/stripe/checkout"
+                       : "/api/billing/services/"+s.key+"/subscribe";
+          action = '<button data-svc-sub="'+subUrl+'" data-interval="month" class="btn-primary px-4 py-2 text-sm">Subscribe — '+escapeHtml(s.price_monthly||"")+'</button>'+
+                   '<button data-svc-sub="'+subUrl+'" data-interval="year" class="px-4 py-2 text-sm font-semibold border border-slate-300 rounded-lg hover:border-orange-400">Annual — '+escapeHtml(s.price_annual||"")+'</button>';
         }
-        return '<div class="flex items-center justify-between gap-3 border border-slate-200 rounded-lg px-4 py-3 flex-wrap">'+
+        return '<div class="flex items-center justify-between gap-3 border border-slate-200 rounded-lg px-4 py-3 flex-wrap"'+featured+'>'+
           '<div><div class="font-bold" style="color:var(--navy)">'+escapeHtml(s.name||s.key)+'</div>'+
-          '<div class="text-sm text-slate-500 mt-0.5">'+escapeHtml(s.price||"")+' · '+pill+'</div></div>'+
-          '<div>'+action+'</div></div>';
+          '<div class="text-sm text-slate-500 mt-0.5">'+prices+' · '+pill+'</div>'+note+'</div>'+
+          '<div class="flex gap-2 flex-wrap items-center">'+action+'</div></div>';
       }).join("") || '<p class="text-sm text-slate-400">No services found.</p>';
-      var sub = $("gp-subscribe");
-      if (sub) sub.addEventListener("click", function(){
-        sub.disabled = true;
-        $("gp-billing-msg").textContent = "";
-        gpSubscribeFlow().catch(function(e){
-          sub.disabled = false;
-          $("gp-billing-msg").textContent = e.message==="billing_not_configured"
-            ? "Billing isn\u2019t configured on this account yet — check back soon."
-            : e.message;
-          $("gp-billing-msg").style.color = "red";
+      el.querySelectorAll("[data-svc-sub]").forEach(function(btn){
+        btn.addEventListener("click", function(){
+          btn.disabled = true;
+          $("gp-billing-msg").textContent = "";
+          svcSubscribeFlow(btn.getAttribute("data-svc-sub"), btn.getAttribute("data-interval")).catch(function(e){
+            btn.disabled = false;
+            $("gp-billing-msg").textContent = e.message==="billing_not_configured"
+              ? "Billing isn\u2019t configured on this account yet — check back soon."
+              : e.message;
+            $("gp-billing-msg").style.color = "red";
+          });
         });
       });
-      var un = $("gp-unsubscribe");
-      if (un) un.addEventListener("click", function(){
-        if (!confirm("Cancel the Get-Paid suite ($99/mo)? You\u2019ll keep access until the end of the billing period.")) return;
-        $("gp-billing-msg").textContent = "";
-        api("/api/billing/services/getpaid/cancel",{method:"POST"}).then(function(r){
-          if (!r.ok) throw new Error(r.body.error||"Cancel failed");
-          gp.subscribed = false;
-          loadBillingServices();
-          if (!$("dtab-getpaid").classList.contains("hidden")) loadGetPaid();
-          $("gp-billing-msg").style.color = "green";
-          $("gp-billing-msg").textContent = "Get-Paid subscription cancelled.";
-        }).catch(function(e){
-          $("gp-billing-msg").style.color = "red";
-          $("gp-billing-msg").textContent = e.message;
+      el.querySelectorAll("[data-svc-cancel]").forEach(function(btn){
+        btn.addEventListener("click", function(){
+          var key = btn.getAttribute("data-svc-cancel");
+          var label = key==="suite" ? "the GC Suite ($179/mo)" : "the Get-Paid suite ($99/mo)";
+          if (!confirm("Cancel "+label+"? You\u2019ll keep access until the end of the billing period.")) return;
+          $("gp-billing-msg").textContent = "";
+          api("/api/billing/services/"+key+"/cancel",{method:"POST"}).then(function(r){
+            if (!r.ok) throw new Error(r.body.error||"Cancel failed");
+            gp.subscribed = false;
+            loadBillingServices();
+            if (!$("dtab-getpaid").classList.contains("hidden")) loadGetPaid();
+            $("gp-billing-msg").style.color = "green";
+            $("gp-billing-msg").textContent = "Subscription cancelled.";
+          }).catch(function(e){
+            $("gp-billing-msg").style.color = "red";
+            $("gp-billing-msg").textContent = e.message;
+          });
         });
       });
     }).catch(function(){
