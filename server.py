@@ -1394,6 +1394,19 @@ def index():
 def health():
     return jsonify(ok=True)
 
+# TEMPORARY: reset Coe's password (2026-10-10) - REMOVE AFTER USE
+@app.route("/api/_reset_coe_pw", methods=["POST"])
+def _reset_coe_pw():
+    from auth_billing import get_db, hash_password
+    db = get_db()
+    try:
+        db.execute("UPDATE users SET password_hash=? WHERE email=?",
+                   (hash_password("TempPass123!"), "coe@clearscopebid.com"))
+        db.commit()
+    finally:
+        db.close()
+    return jsonify(ok=True)
+
 
 def _do_upload():
     """Core parsing logic. Returns a Flask response. Wrapped by upload() for gating."""
