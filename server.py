@@ -1681,22 +1681,10 @@ def track_page_view():
 
 
 @app.route("/api/admin/tracking")
+@auth_billing.admin_required
 def admin_tracking():
     """Admin-only: page view stats. Requires admin auth."""
-    from auth_billing import get_db, login_required, admin_required
-    # Use the existing admin decorator pattern
-    import functools
-    from flask import g
-    # Check admin via the existing mechanism
-    auth_header = request.headers.get("Authorization", "")
-    # Simplified: reuse the admin check from auth_billing
-    try:
-        from auth_billing import get_current_user
-        user = get_current_user()
-        if not user or not user.get("is_admin"):
-            return jsonify(error="Admin required"), 403
-    except Exception:
-        return jsonify(error="Admin required"), 403
+    from auth_billing import get_db
     import time
     now = int(time.time())
     db = get_db()
@@ -1753,15 +1741,10 @@ def admin_tracking():
 
 
 @app.route("/api/admin/tracking/reset", methods=["POST"])
+@auth_billing.admin_required
 def admin_tracking_reset():
     """Admin-only: delete all tracked page views (reset counters to zero)."""
-    try:
-        from auth_billing import get_current_user, get_db
-        user = get_current_user()
-        if not user or not user.get("is_admin"):
-            return jsonify(error="Admin required"), 403
-    except Exception:
-        return jsonify(error="Admin required"), 403
+    from auth_billing import get_db
     db = get_db()
     try:
         db.execute("DELETE FROM page_views")
