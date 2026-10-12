@@ -444,19 +444,16 @@ def send_email(to, subject, body_html, text=None):
     req = urllib.request.Request(
         "https://api.resend.com/emails",
         data=json.dumps(payload).encode(),
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                 # Resend sits behind Cloudflare, which rejects the default
+                 # Python-urllib user-agent with error 1010 (diagnosed
+                 # 2026-10-12). A named UA is required.
+                 "User-Agent": "ClearScope-Tabulator/1.0"})
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return 200 <= resp.status < 300
-    except Exception as e:  # TEMP DEBUG 2026-10-12: surface Resend failures
-        detail = ""
-        try:
-            detail = e.read().decode()[:300]
-        except Exception:
-            pass
-        msg = f"{type(e).__name__}: {e} {detail}".strip()
-        print(f"[send_email] FAILED to={to}: {msg}", flush=True)
-        globals()["LAST_SEND_ERROR"] = msg
+    except Exception as e:
+        print(f"[send_email] FAILED to={to}: {type(e).__name__}: {e}", flush=True)
         return False
 
 
@@ -603,10 +600,7 @@ document.getElementById("go").onclick = function(){
             "tabulation and use the save step again — or just reply to this email.</p>"
             "<p>— ClearScope Tabulator</p>")
         ok = send_email(email, "Your bid tabulation is saved", body_html)
-        resp = {"ok": True, "emailed": ok}
-        if not ok and globals().get("LAST_SEND_ERROR"):
-            resp["debug_error"] = globals()["LAST_SEND_ERROR"]  # TEMP DEBUG
-        return jsonify(**resp)
+        return jsonify(ok=True, emailed=ok)
 
     @app.get("/set-password")
     def set_password_page():
