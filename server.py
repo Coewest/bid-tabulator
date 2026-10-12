@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from flask import Flask, request, jsonify, send_from_directory, session, g
 
 import auth_billing
-from auth_billing import get_db, getpaid_required
+from auth_billing import get_db, getpaid_required, login_required, service_active
 
 app = Flask(__name__)
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -2540,6 +2540,106 @@ def register_getpaid_routes(app):
 
 
 register_getpaid_routes(app)
+
+
+# ------------------------------------------------------------ suite overview
+@app.get("/api/suite/overview")
+@login_required
+def suite_overview():
+    """One payload for the GC Suite dashboard home (Coe 2026-10-12):
+    tabulator recents + the get-paid money picture. getpaid is null when
+    the service isn't active on the company, so the client can upsell."""
+    uid = g.user["id"]
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT id, project_name, data_json, created_at FROM tabulations"
+            " WHERE user_id=? ORDER BY id DESC", (uid,)).fetchall()
+        recent = []
+        for r in rows[:8]:
+            bidders = 0
+            low_total = None
+            try:
+                d = json.loads(r["data_json"] or "{}")
+                bidders = len(d.get("bidders") or [])
+                totals = [t for t in ((d.get("ranking") or {}).get("totals") or [])
+                          if isinstance(t, (int, float))]
+                if totals:
+                    low_total = min(totals)
+            except Exception:
+                pass
+            recent.append({"id": r["id"], "project_name": r["project_name"],
+                           "created_at": r["created_at"], "bidders": bidders,
+                           "low_total": low_total})
+        out = {"tabulator": {"count": len(rows), "recent": recent},
+               "getpaid": None}
+        if service_active(uid, "getpaid") or service_active(uid, "suite"):
+            draws = db.execute(
+                "SELECT d.id, d.project_id, d.draw_number, d.status,"
+                " d.retainage_pct, p.name AS project_name,"
+                " COALESCE(SUM(l.scheduled_value), 0) AS scheduled,"
+                " COALESCE(SUM(l.scheduled_value * l.pct_complete / 100.0), 0)"
+                " AS earned"
+                " FROM pay_draws d JOIN getpaid_projects p ON p.id = d.project_id"
+                " LEFT JOIN pay_draw_lines l ON l.draw_id = d.id"
+                " WHERE d.company_id=? GROUP BY d.id", (uid,)).fetchall()
+            proj = {}
+            totals = {"billed": 0.0, "collected": 0.0, "outstanding": 0.0,
+                      "retained": 0.0, "scheduled": 0.0}
+            stage = {"in_billing": 0, "submitted": 0, "paid": 0}
+            for d in draws:
+                due = d["earned"] * (1 - (d["retainage_pct"] or 0) / 100.0)
+                ret = d["earned"] * (d["retainage_pct"] or 0) / 100.0
+                p = proj.setdefault(d["project_id"], {
+                    "draws": 0, "billed": 0.0, "collected": 0.0,
+                    "outstanding": 0.0})
+                p["draws"] += 1
+                totals["scheduled"] += d["scheduled"]
+                if d["status"] in ("submitted", "paid"):
+                    totals["billed"] += due
+                    totals["retained"] += ret
+                    p["billed"] += due
+                    if d["status"] == "paid":
+                        totals["collected"] += due
+                        p["collected"] += due
+                        stage["paid"] += 1
+                    else:
+                        totals["outstanding"] += due
+                        p["outstanding"] += due
+                        stage["submitted"] += 1
+            projects = db.execute(
+                "SELECT id, name, client_name FROM getpaid_projects"
+                " WHERE company_id=? ORDER BY id DESC", (uid,)).fetchall()
+            plist = []
+            for pr in projects:
+                agg = proj.get(pr["id"], {"draws": 0, "billed": 0.0,
+                                          "collected": 0.0, "outstanding": 0.0})
+                if agg["draws"]:
+                    stage["in_billing"] += 1
+                plist.append({"id": pr["id"], "name": pr["name"],
+                              "client_name": pr["client_name"],
+                              "draws": agg["draws"],
+                              "billed": round(agg["billed"], 2),
+                              "collected": round(agg["collected"], 2),
+                              "outstanding": round(agg["outstanding"], 2)})
+            wrows = db.execute(
+                "SELECT w.id, w.sub_name, w.amount, w.status, w.waiver_kind,"
+                " w.waiver_scope, d.draw_number, d.id AS draw_id,"
+                " p.name AS project_name, p.id AS project_id"
+                " FROM lien_waivers w JOIN pay_draws d ON d.id = w.draw_id"
+                " JOIN getpaid_projects p ON p.id = d.project_id"
+                " WHERE w.company_id=? AND w.status IN ('pending', 'sent')"
+                " ORDER BY w.id", (uid,)).fetchall()
+            out["getpaid"] = {
+                "projects": plist,
+                "totals": {k: round(v, 2) for k, v in totals.items()},
+                "stage": stage,
+                "waivers_unsigned": [dict(r) for r in wrows],
+                "draws_blocked": len({r["draw_id"] for r in wrows}),
+            }
+        return jsonify(out)
+    finally:
+        db.close()
 
 
 if __name__ == "__main__":
