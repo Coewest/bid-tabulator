@@ -1710,6 +1710,32 @@ def admin_tracking():
             "last_30d": count_since(30 * 86400),
             "all_time": count_since(now),
         }
+        # Tabulations actually run, split by the account's CURRENT plan
+        # (subscriber = subscriptions.status active/trialing/past_due, the
+        # same definition auth_billing.subscription_status uses; anon =
+        # saved before any account existed). Added 2026-10-12 (Coe): the
+        # traffic counters alone can't show visitors -> free-tab usage.
+        def tab_counts(seconds):
+            row = db.execute(
+                "SELECT COUNT(*) AS total,"
+                " COALESCE(SUM(CASE WHEN t.user_id IS NULL THEN 1 ELSE 0 END), 0) AS anon,"
+                " COALESCE(SUM(CASE WHEN t.user_id IS NOT NULL AND s.status IN"
+                " ('active', 'trialing', 'past_due') THEN 1 ELSE 0 END), 0) AS paid,"
+                " COUNT(DISTINCT t.user_id) AS users"
+                " FROM tabulations t"
+                " LEFT JOIN subscriptions s ON s.user_id = t.user_id"
+                " WHERE t.created_at > ?", (now - seconds,)).fetchone()
+            total = row["total"]
+            return {"total": total, "paid": row["paid"], "anon": row["anon"],
+                    "free": total - row["paid"] - row["anon"],
+                    "users": row["users"]}
+        stats["tabulations"] = {
+            "last_hour": tab_counts(3600),
+            "today": tab_counts(86400),
+            "last_7d": tab_counts(7 * 86400),
+            "last_30d": tab_counts(30 * 86400),
+            "all_time": tab_counts(now),
+        }
         # Top pages (last 30d)
         top_pages = [
             {"path": r["path"], "views": r["c"]}
