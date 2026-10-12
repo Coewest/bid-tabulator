@@ -54,6 +54,15 @@ def parse_money(raw):
     low = s.lower()
     if low in ("included", "incl", "incl.", "nic", "no charge", "free", "inc."):
         return 0.0, "included"
+    # alternate/deduct qualifiers: "ADD $8,400", "DEDUCT $2,000", "Alt. $1,200".
+    # The qualifier word carries the row semantics (flagged elsewhere); the
+    # amount itself parses as a positive magnitude. A leading alpha run is
+    # tolerated for cell-boundary bleed ("sADD $12,750" — trailing letter of
+    # an adjacent description glued to the amount), but approximation words
+    # ("approx $500") must NOT parse: only qualifier-led strings strip.
+    s = re.sub(r"^[A-Za-z]*?(add|deduct|alternate|alt\.?)\s+", "", s,
+               flags=re.IGNORECASE)
+    low = s.lower()
     # percent detection: "1.79%" or "1.79 percent"
     pct = re.match(r"^\s*\(?\s*(\d+(?:\.\d+)?)\s*%\s*\)?\s*$", s)
     if pct:
@@ -580,8 +589,10 @@ def extract_board_packet(path, filename):
     warnings = []
 
     # Extract number of bidders: "Nine contractors submitted bids" / "9 bidders"
+    # NOTE: `upper` is uppercased text, so these patterns need re.IGNORECASE.
     bidder_count = None
-    m = re.search(r"(\d+)\s+(contractors?|bidders?)\s+submitted\s+bids?", upper)
+    m = re.search(r"(\d+)\s+(contractors?|bidders?)\s+submitted\s+bids?", upper,
+                  re.IGNORECASE)
     if m:
         bidder_count = int(m.group(1))
     else:
@@ -589,7 +600,8 @@ def extract_board_packet(path, filename):
         word_nums = {"ONE": 1, "TWO": 2, "THREE": 3, "FOUR": 4, "FIVE": 5,
                      "SIX": 6, "SEVEN": 7, "EIGHT": 8, "NINE": 9, "TEN": 10,
                      "ELEVEN": 11, "TWELVE": 12}
-        m = re.search(r"\b(ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|ELEVEN|TWELVE)\b\s+(contractors?|bidders?)\s+submitted", upper)
+        m = re.search(r"\b(ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN|ELEVEN|TWELVE)\b\s+(contractors?|bidders?)\s+submitted", upper,
+                      re.IGNORECASE)
         if m:
             bidder_count = word_nums[m.group(1)]
 
@@ -695,8 +707,153 @@ def _pdf_tables_with_boxes(path):
                 except (AttributeError, TypeError, IndexError):
                     pass
                 out.append({"data": data, "col_x": col_x,
-                            "bbox": t.bbox, "page_width": page.width})
+                            "bbox": t.bbox, "page_width": page.width,
+                            "page": page.page_number, "text_fallback": False})
     return out
+
+
+def _words_to_grid(words):
+    """Reconstruct a table grid from pdfplumber words (borderless PDFs).
+
+    Finds the header line (a line whose text reads like a bid-tab header),
+    derives column intervals from the header words' x positions, then assigns
+    every word to a column by its x-center. Returns (data, col_x) or None when
+    no header line is found.
+    """
+    # group words into lines by top
+    lines = {}
+    for w in words:
+        key = round(w["top"] / 3)  # ~3pt line tolerance
+        lines.setdefault(key, []).append(w)
+    ordered = [sorted(lines[k], key=lambda w: w["x0"]) for k in sorted(lines)]
+
+    hdr_li = next(
+        (i for i, lw in enumerate(ordered)
+         if is_header_row([" ".join(w["text"] for w in lw)])),
+        None,
+    )
+    if hdr_li is None:
+        return None
+    hdr_words = ordered[hdr_li]
+    # column intervals from header words; merge horizontally overlapping words
+    intervals = []
+    for w in hdr_words:
+        x0, x1 = w["x0"], w["x1"]
+        if intervals and x0 <= intervals[-1][1] + 1:
+            intervals[-1][1] = max(intervals[-1][1], x1)
+        else:
+            intervals.append([x0, x1])
+    if len(intervals) < 4:
+        return None
+    # expand each interval to the midpoint gap with its neighbors
+    bounds = []
+    for i, (x0, x1) in enumerate(intervals):
+        lo = intervals[i - 1][1] + (x0 - intervals[i - 1][1]) / 2 if i > 0 else 0
+        hi = x1 + (intervals[i + 1][0] - x1) / 2 if i + 1 < len(intervals) else 1e9
+        bounds.append((lo, hi))
+    col_x = [(a + b) / 2 for a, b in intervals]
+
+    def _col_of(w):
+        cx = (w["x0"] + w["x1"]) / 2
+        for i, (lo, hi) in enumerate(bounds):
+            if lo <= cx < hi:
+                return i
+        return len(bounds) - 1 if cx >= bounds[-1][1] else 0
+
+    data = []
+    for lw in ordered:
+        row = [""] * len(intervals)
+        for w in lw:
+            ci = _col_of(w)
+            row[ci] = (row[ci] + " " + w["text"]).strip()
+        if any(c.strip() for c in row):
+            data.append(row)
+    return data, col_x
+
+
+def _pdf_tables_text_fallback(path):
+    """Fallback for borderless PDFs: rebuild tables from word positions.
+
+    Only pages whose reconstructed grid has a recognizable bid-tab header are
+    kept, so prose pages can never hallucinate a table. Returns the same shape
+    as _pdf_tables_with_boxes.
+    """
+    import pdfplumber
+    out = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            words = page.extract_words()
+            if not words:
+                continue
+            grid = _words_to_grid(words)
+            if grid is None:
+                continue
+            data, col_x = grid
+            # plausibility gate: header within first rows, enough columns/rows
+            if not any(is_header_row(r) for r in data[:6]):
+                continue
+            if len(data) < 3:
+                continue
+            out.append({"data": data, "col_x": col_x,
+                        "bbox": None, "page_width": page.width,
+                        "page": page.page_number, "text_fallback": True})
+    return out
+
+
+def _header_signature(table):
+    """Normalized header-row signature for continuation-page matching."""
+    for r in table["data"]:
+        if is_header_row(r):
+            return (len(r), tuple(norm_desc(c) for c in r))
+    return None
+
+
+def _merge_tab_tables(tables):
+    """Merge continuation tables (same header on later pages) into one table.
+
+    Returns (data, col_x, warnings). Tables with a different header signature
+    are NOT merged; instead a warning names the dropped pages so data loss is
+    never silent.
+    """
+    # primary: largest table (by cells) that has a recognizable header
+    def _cells(t):
+        return len(t["data"]) * max((len(r) for r in t["data"]), default=0)
+    with_hdr = [t for t in tables if _header_signature(t) is not None]
+    primary = max(with_hdr or tables, key=_cells)
+    prim_sig = _header_signature(primary)
+    prim_hdr_idx = next(
+        (i for i, r in enumerate(primary["data"]) if is_header_row(r)), 0)
+
+    data = [list(r) for r in primary["data"]]
+    col_x = primary["col_x"]
+    warnings = []
+    merged_pages, dropped = [], []
+    for t in tables:
+        if t is primary:
+            continue
+        sig = _header_signature(t)
+        if sig is not None and prim_sig is not None and sig == prim_sig:
+            # continuation page: append rows after its header row
+            hdr_i = next(i for i, r in enumerate(t["data"]) if is_header_row(r))
+            for r in t["data"][hdr_i + 1:]:
+                row = list(r)
+                while len(row) < len(data[0]):
+                    row.append("")
+                data.append(row[:len(data[0])])
+            merged_pages.append(t["page"])
+        else:
+            n_rows = sum(1 for r in t["data"] if any((c or "").strip() for c in r))
+            dropped.append((t["page"], n_rows))
+    if merged_pages:
+        warnings.append(
+            f"bid table continues on page(s) {', '.join(map(str, sorted(set(merged_pages))))} "
+            "— continuation rows merged into one tabulation")
+    for pg, n_rows in dropped:
+        warnings.append(
+            f"page {pg}: separate table detected with a different layout "
+            f"({n_rows} non-empty rows) — only the main bid table was parsed; "
+            "verify those rows are not part of this bid")
+    return data, col_x, warnings
 
 
 def _name_xcenters_from_words(path):
@@ -713,13 +870,20 @@ def _name_xcenters_from_words(path):
 
 
 def extract_pdf_tab(path, filename):
-    """Parse a bid-tabulation PDF: one table, multiple bidder column groups."""
+    """Parse a bid-tabulation PDF: one table, multiple bidder column groups.
+
+    Continuation tables (same header on later pages) are merged; tables with a
+    different layout produce an explicit warning so data loss is never silent.
+    Borderless PDFs fall back to word-position grid reconstruction.
+    """
     tables = _pdf_tables_with_boxes(path)
     if not tables:
+        tables = _pdf_tables_text_fallback(path)
+    if not tables:
         return None, ["no tables found in PDF"]
-    # largest table by cells
-    tab = max(tables, key=lambda t: len(t["data"]) * max((len(r) for r in t["data"]), default=0))
-    return extract_tab_from_rows(tab["data"], tab["col_x"], filename)
+    data, col_x, merge_warnings = _merge_tab_tables(tables)
+    result, warnings = extract_tab_from_rows(data, col_x, filename)
+    return result, merge_warnings + warnings
 
 
 def extract_tab_from_rows(data, col_x, filename):
@@ -792,7 +956,14 @@ def extract_tab_from_rows(data, col_x, filename):
     if name_row_idx is not None and best_score > 0:
         name_row = data[name_row_idx]
         if col_x:
-            # PDF: map each group's x-center to nearest name cell x-center
+            # PDF: map each group's x-center to nearest name cell x-center.
+            # Prefer the group's OWN columns first: borderless-PDF text grids can
+            # split a name's words across the group's Rate/Total pair
+            # ("ABC" | "Construction LLC"), so join the non-empty cells found
+            # in the group's own columns (requiring at least one company hint
+            # among them) before falling back to nearest-x.
+            import re as _re
+            _junk_cell = _re.compile(r"^[\d\s\-\.\(\)\+xX\$,\/]+$").match
             name_cells = []  # (text, x_center)
             for ci in range(first_bid_col, len(name_row)):
                 cell = (name_row[ci] or "").strip()
@@ -804,8 +975,25 @@ def extract_tab_from_rows(data, col_x, filename):
             for (tc, rc) in groups:
                 xs = [col_x[c] for c in (tc, rc) if c is not None and c < len(col_x)]
                 group_x.append(sum(xs) / len(xs) if xs else None)
+            used_cols = set()
             used = set()
             for gi, gx in enumerate(group_x):
+                tc, rc = groups[gi]
+                own_cols = sorted(c for c in (tc, rc)
+                                  if c is not None and c >= first_bid_col
+                                  and c < len(name_row) and c not in used_cols)
+                own_texts = [(name_row[c] or "").strip() for c in own_cols]
+                own_texts = [t for t in own_texts if t and not _junk_cell(t)]
+                if own_texts and any(any(h in t.lower() for h in COMPANY_HINTS)
+                                     for t in own_texts):
+                    # join split name words from the group's own columns
+                    used_cols.update(own_cols)
+                    for ni, (txt, nx) in enumerate(name_cells):
+                        if ni not in used and any(
+                                txt == (name_row[c] or "").strip() for c in own_cols):
+                            used.add(ni)
+                    bidder_names[gi], bidder_locs[gi] = _split_name(" ".join(own_texts))
+                    continue
                 if gx is None:
                     continue
                 best, bestd = None, 1e18
@@ -1318,6 +1506,35 @@ def extract_csv_file(path, filename):
     return _rows_to_bidder(rows, filename), []
 
 
+def _pdf_prose_total(pages):
+    """Find a stated lump-sum total in prose (no-table proposal letters).
+
+    Returns the amount or None. Anchored to explicit total language
+    ("lump sum", "total bid", "bid amount") so unrelated dollar figures
+    never fabricate a total. Ambiguous (multiple distinct values) -> None.
+    """
+    import re
+    full = "\n".join(pages)
+    patterns = [
+        r"lump\s*sum\s*[:\-]?\s*\$([\d,]+(?:\.\d{1,2})?)",
+        r"total\s+(?:bid|proposal|contract)\s*(?:amount|price)?\s*[:\-]?\s*\$([\d,]+(?:\.\d{1,2})?)",
+        r"\bbid\s+amount\s*[:\-]?\s*\$([\d,]+(?:\.\d{1,2})?)",
+        r"propos(?:al|ed)\s+(?:price|amount)\s*[:\-]?\s*\$([\d,]+(?:\.\d{1,2})?)",
+        r"contract\s+sum\s*[:\-]?\s*\$([\d,]+(?:\.\d{1,2})?)",
+    ]
+    found = []
+    for pat in patterns:
+        for m in re.finditer(pat, full, re.IGNORECASE):
+            try:
+                found.append(float(m.group(1).replace(",", "")))
+            except ValueError:
+                pass
+    distinct = sorted(set(found))
+    if len(distinct) == 1:
+        return distinct[0]
+    return None
+
+
 def extract_pdf_single(path, filename):
     """Single-bidder PDF: text tables -> item/amount list."""
     import pdfplumber
@@ -1328,6 +1545,18 @@ def extract_pdf_single(path, filename):
                 for r in t:
                     rows.append([(c or "").strip() for c in r])
     if not rows:
+        # lump-sum proposal letter: no tables — look for a stated total
+        # in the prose so the bidder isn't silently dropped from a merge.
+        pages = _pdf_full_text(path)
+        total = _pdf_prose_total(pages)
+        if total is not None:
+            name = os.path.splitext(filename)[0].replace("_", " ").replace("-", " ")
+            return {"name": name, "location": "", "file": filename,
+                    "items": [], "stated_total": total,
+                    "tax_total": 0.0, "has_tax": False,
+                    "prose_total": True}, [
+            f"no line-item table found in {filename} — lump-sum total "
+            f"${total:,.2f} taken from proposal text; no line items to level"]
         return None, ["no tables found in PDF"]
     return _rows_to_bidder(rows, filename), []
 
@@ -1580,13 +1809,13 @@ def _do_upload():
                 return jsonify(data)
             # fall through to standard table extraction
             data, errs2 = extract_pdf_tab(path, filename)
-            errs = errs + errs2
             if data and len(data["bidders"]) >= 2 and data["items"]:
                 return jsonify(data)
-            # fall through to single-bidder mode
+            # fall through to single-bidder mode. Tab-attempt warnings describe
+            # a discarded parse — keep them only if single-bidder also fails.
             b, errs3 = extract_pdf_single(path, filename)
             bidders = [b] if b else []
-            warnings = errs + errs3
+            warnings = (errs + errs2 + errs3) if not b else errs3
         else:
             bidders, warnings = [], []
             for path, filename, ext in saved:
@@ -1596,7 +1825,9 @@ def _do_upload():
                     if data and len(data["bidders"]) >= 2 and data["items"]:
                         return jsonify(data)
                     b, errs2 = extract_pdf_single(path, filename)
-                    warnings += errs + errs2
+                    # tab-attempt warnings describe a discarded parse — keep
+                    # them only if single-bidder extraction also fails.
+                    warnings += errs2 if b else (errs + errs2)
                 elif ext in (".xlsx", ".xls"):
                     b, errs2 = extract_excel(path, filename)
                     if isinstance(b, dict) and b.pop("_is_tab", False):
