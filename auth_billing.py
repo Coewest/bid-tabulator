@@ -448,7 +448,13 @@ def send_email(to, subject, body_html, text=None):
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return 200 <= resp.status < 300
-    except Exception:
+    except Exception as e:  # TEMP DEBUG 2026-10-12: surface Resend failures in logs
+        detail = ""
+        try:
+            detail = e.read().decode()[:300]
+        except Exception:
+            pass
+        print(f"[send_email] FAILED to={to}: {type(e).__name__} {e} {detail}", flush=True)
         return False
 
 
