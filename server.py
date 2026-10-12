@@ -2556,22 +2556,61 @@ def suite_overview():
             "SELECT id, project_name, data_json, created_at FROM tabulations"
             " WHERE user_id=? ORDER BY id DESC", (uid,)).fetchall()
         recent = []
-        for r in rows[:8]:
+        low_total_sum = 0.0
+        latest = None
+        for i, r in enumerate(rows):
             bidders = 0
             low_total = None
+            completeness = None
+            rank_state = None
+            bidder_rows = []
             try:
                 d = json.loads(r["data_json"] or "{}")
-                bidders = len(d.get("bidders") or [])
-                totals = [t for t in ((d.get("ranking") or {}).get("totals") or [])
+                blist = d.get("bidders") or []
+                bidders = len(blist)
+                ranking = d.get("ranking") or {}
+                rank_state = ranking.get("state")
+                raw_totals = ranking.get("totals") or []
+                totals = [t for t in raw_totals
                           if isinstance(t, (int, float))]
                 if totals:
                     low_total = min(totals)
+                    low_total_sum += low_total
+                items = d.get("items") or []
+                if items and bidders:
+                    priced = 0
+                    cells = 0
+                    for it in items:
+                        for v in (it.get("values") or []):
+                            cells += 1
+                            if v.get("status") == "priced":
+                                priced += 1
+                    if cells:
+                        completeness = round(100.0 * priced / cells)
+                if i == 0:
+                    for j, b in enumerate(blist):
+                        t = raw_totals[j] if j < len(raw_totals) else None
+                        bidder_rows.append({
+                            "name": b.get("name") or f"Bidder {j + 1}",
+                            "total": t if isinstance(t, (int, float)) else None,
+                            "low": (t is not None and low_total is not None
+                                    and t == low_total)})
+                    latest = {"id": r["id"],
+                              "project_name": r["project_name"],
+                              "bidders": bidder_rows,
+                              "rank_state": rank_state}
             except Exception:
                 pass
-            recent.append({"id": r["id"], "project_name": r["project_name"],
-                           "created_at": r["created_at"], "bidders": bidders,
-                           "low_total": low_total})
-        out = {"tabulator": {"count": len(rows), "recent": recent},
+            if i < 8:
+                recent.append({"id": r["id"],
+                               "project_name": r["project_name"],
+                               "created_at": r["created_at"],
+                               "bidders": bidders, "low_total": low_total,
+                               "completeness": completeness,
+                               "rank_state": rank_state})
+        out = {"tabulator": {"count": len(rows), "recent": recent,
+                             "low_total_sum": round(low_total_sum, 2),
+                             "latest": latest},
                "getpaid": None}
         if service_active(uid, "getpaid") or service_active(uid, "suite"):
             draws = db.execute(
@@ -2630,11 +2669,38 @@ def suite_overview():
                 " JOIN getpaid_projects p ON p.id = d.project_id"
                 " WHERE w.company_id=? AND w.status IN ('pending', 'sent')"
                 " ORDER BY w.id", (uid,)).fetchall()
+            wall = db.execute(
+                "SELECT w.id, w.sub_name, w.amount, w.status, w.waiver_kind,"
+                " w.waiver_scope, w.signed_at, d.draw_number,"
+                " p.name AS project_name, p.id AS project_id"
+                " FROM lien_waivers w JOIN pay_draws d ON d.id = w.draw_id"
+                " JOIN getpaid_projects p ON p.id = d.project_id"
+                " WHERE w.company_id=? ORDER BY w.id DESC LIMIT 5",
+                (uid,)).fetchall()
+            drows = db.execute(
+                "SELECT d.id, d.draw_number, d.status, d.retainage_pct,"
+                " d.created_at, p.name AS project_name, p.id AS project_id,"
+                " COALESCE(SUM(l.scheduled_value * l.pct_complete / 100.0), 0)"
+                " AS earned"
+                " FROM pay_draws d JOIN getpaid_projects p ON p.id = d.project_id"
+                " LEFT JOIN pay_draw_lines l ON l.draw_id = d.id"
+                " WHERE d.company_id=? GROUP BY d.id"
+                " ORDER BY d.id DESC LIMIT 5", (uid,)).fetchall()
+            recent_draws = [{
+                "id": dr["id"], "project_id": dr["project_id"],
+                "project_name": dr["project_name"],
+                "draw_number": dr["draw_number"], "status": dr["status"],
+                "created_at": dr["created_at"],
+                "due": round(dr["earned"] *
+                             (1 - (dr["retainage_pct"] or 0) / 100.0), 2),
+            } for dr in drows]
             out["getpaid"] = {
                 "projects": plist,
                 "totals": {k: round(v, 2) for k, v in totals.items()},
                 "stage": stage,
                 "waivers_unsigned": [dict(r) for r in wrows],
+                "waivers_recent": [dict(r) for r in wall],
+                "recent_draws": recent_draws,
                 "draws_blocked": len({r["draw_id"] for r in wrows}),
             }
         return jsonify(out)
