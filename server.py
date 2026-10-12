@@ -1666,6 +1666,14 @@ def track_page_view():
     visitor_hash = hashlib.sha256(f"{ip}|{ua}|{day}|tabulator-salt".encode()).hexdigest()[:16]
     if is_bot:
         return jsonify(ok=True, bot=True)
+    # Don't record the admin's own visits (keeps stats clean)
+    try:
+        import auth_billing as _ab
+        _u = _ab.current_user()
+        if _u and _ab.is_admin(_u):
+            return jsonify(ok=True, admin=True)
+    except Exception:
+        pass
     db = get_db()
     try:
         db.execute(
@@ -1736,6 +1744,29 @@ def admin_tracking():
         stats["top_referrers"] = top_refs
         stats["daily"] = daily
         return jsonify(stats)
+    finally:
+        db.close()
+
+
+@app.route("/api/admin/tracking/exclude-mine", methods=["POST"])
+@auth_billing.admin_required
+def admin_tracking_exclude_mine():
+    """Admin-only: delete all page views attributable to the admin's current
+    browser (recomputes the daily visitor hashes for the last 30 days)."""
+    from auth_billing import get_db
+    import hashlib, datetime
+    ua = request.headers.get("User-Agent", "")[:500]
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
+    hashes = []
+    for i in range(30):
+        day = (datetime.datetime.utcnow() - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+        hashes.append(hashlib.sha256(f"{ip}|{ua}|{day}|tabulator-salt".encode()).hexdigest()[:16])
+    db = get_db()
+    try:
+        placeholders = ",".join("?" for _ in hashes)
+        cur = db.execute(f"DELETE FROM page_views WHERE visitor_hash IN ({placeholders})", hashes)
+        db.commit()
+        return jsonify(ok=True, removed=cur.rowcount)
     finally:
         db.close()
 
