@@ -645,10 +645,18 @@
 
 <!-- ============ SAVE PROMPT (after anonymous free tabulation) ============ -->
 <div id="save-prompt" class="hidden mb-5 bg-blue-50 border-l-4 border-blue-500 p-4 rounded-r-lg">
-  <p class="text-sm text-blue-900"><strong>Want to keep this?</strong>
-    Create a free account and this tabulation will be saved to your dashboard.
-    <button id="save-prompt-btn" class="btn-primary px-4 py-1.5 text-sm ml-2">Create free account</button>
-  </p>
+  <div id="save-prompt-main">
+    <p class="text-sm text-blue-900"><strong>Save this tabulation</strong> — enter your email and we'll attach it to a free account and send you a link to open it anytime. No password needed now.</p>
+    <div class="mt-2 flex flex-wrap items-center gap-2">
+      <input id="save-email" type="email" placeholder="you@company.com" class="border rounded px-3 py-1.5 text-sm" style="min-width:240px">
+      <button id="save-email-btn" class="btn-primary px-4 py-1.5 text-sm">Save my tabulation</button>
+      <span id="save-email-msg" class="text-sm text-blue-900"></span>
+    </div>
+    <p class="text-xs text-blue-800 mt-2">Prefer a password? <a href="#" id="save-prompt-pw" class="underline">Create an account the regular way</a></p>
+  </div>
+  <div id="save-prompt-done" class="hidden">
+    <p class="text-sm text-blue-900"><strong>Saved &#10003;</strong> Check your inbox — we sent a link to set a password and open your tabulation whenever you need it.</p>
+  </div>
 </div>
 
 <!-- ============ ADJUST MODAL ============ -->
@@ -1413,6 +1421,7 @@
   /* ================= AUTH + BILLING ================= */
   var authUser = null;         // {id,email,subscription,tabulations,free_remaining}
   var pendingTabId = null;     // anonymous tabulation id to claim on signup
+  var pendingClaimToken = null; // proof this browser ran that tabulation
   var authMode = "signup";     // or "login"
 
   function api(path, opts){
@@ -1792,12 +1801,41 @@
   function afterUploadSuccess(body){
     if (body.tabulation_id && !body.saved){
       pendingTabId = body.tabulation_id;
+      pendingClaimToken = body.claim_token || null;
       // move save prompt above results
       var sp = $("save-prompt");
       $("results-section").parentNode.insertBefore(sp, $("results-section"));
       sp.classList.remove("hidden");
-      $("save-prompt-btn").onclick = function(){ openAuth("signup", pendingTabId); };
+      $("save-email-btn").onclick = saveByEmail;
+      $("save-prompt-pw").onclick = function(e){ e.preventDefault(); openAuth("signup", pendingTabId); };
     }
+  }
+
+  // Email-first save: email only -> account created/attached, link emailed.
+  function saveByEmail(){
+    var email = ($("save-email").value || "").trim();
+    var msg = $("save-email-msg");
+    var btn = $("save-email-btn");
+    if (!email || email.indexOf("@") < 0 || email.indexOf(".") < 0){
+      msg.textContent = "Enter a valid email."; return;
+    }
+    btn.disabled = true; msg.textContent = "Saving\u2026";
+    api("/api/save-by-email", {method:"POST", body: JSON.stringify({
+      email: email, tabulation_id: pendingTabId, claim_token: pendingClaimToken
+    })}).then(function(res){
+      if (res.ok && res.body.ok && res.body.emailed){
+        hide("save-prompt-main"); show("save-prompt-done");
+      } else if (res.ok && res.body.ok){
+        btn.disabled = false;
+        msg.textContent = "Saved \u2014 but the email didn't send. Click Save again to resend your link.";
+      } else {
+        btn.disabled = false;
+        msg.textContent = (res.body && (res.body.message || res.body.error))
+          || "Couldn't save just now — use the password option below.";
+      }
+    }).catch(function(){
+      btn.disabled = false; msg.textContent = "Network error — try again.";
+    });
   }
 
   // billing return URLs
