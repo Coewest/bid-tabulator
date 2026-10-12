@@ -448,13 +448,15 @@ def send_email(to, subject, body_html, text=None):
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return 200 <= resp.status < 300
-    except Exception as e:  # TEMP DEBUG 2026-10-12: surface Resend failures in logs
+    except Exception as e:  # TEMP DEBUG 2026-10-12: surface Resend failures
         detail = ""
         try:
             detail = e.read().decode()[:300]
         except Exception:
             pass
-        print(f"[send_email] FAILED to={to}: {type(e).__name__} {e} {detail}", flush=True)
+        msg = f"{type(e).__name__}: {e} {detail}".strip()
+        print(f"[send_email] FAILED to={to}: {msg}", flush=True)
+        globals()["LAST_SEND_ERROR"] = msg
         return False
 
 
@@ -601,7 +603,10 @@ document.getElementById("go").onclick = function(){
             "tabulation and use the save step again — or just reply to this email.</p>"
             "<p>— ClearScope Tabulator</p>")
         ok = send_email(email, "Your bid tabulation is saved", body_html)
-        return jsonify(ok=True, emailed=ok)
+        resp = {"ok": True, "emailed": ok}
+        if not ok and globals().get("LAST_SEND_ERROR"):
+            resp["debug_error"] = globals()["LAST_SEND_ERROR"]  # TEMP DEBUG
+        return jsonify(**resp)
 
     @app.get("/set-password")
     def set_password_page():
