@@ -627,47 +627,6 @@ document.getElementById("go").onclick = function(){
         session.pop("free_used", None)
         return jsonify(ok=True)
 
-    # TEMP 2026-10-12 cleanup endpoint (removed the same day): dump + delete
-    # tabulation rows by id. Path carries an unguessable token.
-    _CLEANUP_PATH = "/api/x-cleanup-7d4f2a9c1e6b48f0a3d5c2e7f9b1a468"
-
-    @app.post(_CLEANUP_PATH + "/dump")
-    def _temp_cleanup_dump():
-        db = get_db()
-        try:
-            rows = db.execute(
-                "SELECT t.id, t.project_name, t.user_id, u.email AS owner_email,"
-                " t.claimed, t.created_at FROM tabulations t"
-                " LEFT JOIN users u ON u.id = t.user_id ORDER BY t.id").fetchall()
-            users = db.execute(
-                "SELECT id, email, created_at FROM users ORDER BY id").fetchall()
-            return jsonify(tabulations=[dict(r) for r in rows],
-                           users=[dict(r) for r in users])
-        finally:
-            db.close()
-
-    @app.post(_CLEANUP_PATH + "/delete")
-    def _temp_cleanup_delete():
-        body = request.get_json(force=True, silent=True) or {}
-        ids = [int(i) for i in (body.get("ids") or [])]
-        db = get_db()
-        try:
-            n = 0
-            for tid in ids:
-                cur = db.execute("DELETE FROM tabulations WHERE id=?", (tid,))
-                n += cur.rowcount
-            udeleted = 0
-            u = db.execute(
-                "SELECT id FROM users WHERE email='delivered@resend.dev'").fetchone()
-            if u:
-                db.execute("DELETE FROM password_tokens WHERE user_id=?", (u["id"],))
-                cur = db.execute("DELETE FROM users WHERE id=?", (u["id"],))
-                udeleted = cur.rowcount
-            db.commit()
-            return jsonify(deleted_tabulations=n, deleted_test_users=udeleted)
-        finally:
-            db.close()
-
     @app.post("/api/signup")
     def signup():
         body = request.get_json(force=True, silent=True) or {}
