@@ -430,6 +430,7 @@
       <h3 class="text-xl font-bold mb-4" style="color:var(--navy)">Site tracking</h3>
       <div class="flex items-center justify-between mb-3">
         <span class="text-sm text-slate-500">Page view counters</span>
+        <button id="tracking-excludemine" class="text-xs text-slate-400 hover:text-slate-700 hover:underline mr-3">Exclude my visits</button>
         <button id="tracking-reset" class="text-xs text-slate-400 hover:text-red-600 hover:underline">Reset counters</button>
       </div>
       <div id="tracking-stats" class="text-sm text-slate-500">Loading…</div>
@@ -1459,6 +1460,16 @@
   });
 
   function loadAdmin(){
+    var exBtn = $("tracking-excludemine");
+    if (exBtn && !exBtn.dataset.wired){
+      exBtn.dataset.wired = "1";
+      exBtn.addEventListener("click", function(){
+        api("/api/admin/tracking/exclude-mine", {method:"POST"}).then(function(res){
+          if (res.ok) { alert("Removed " + (res.body.removed || 0) + " of your visits. Your future visits won't be tracked."); loadAdmin(); }
+          else alert("Failed.");
+        });
+      });
+    }
     var resetBtn = $("tracking-reset");
     if (resetBtn && !resetBtn.dataset.wired){
       resetBtn.dataset.wired = "1";
