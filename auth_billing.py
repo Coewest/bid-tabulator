@@ -16,11 +16,14 @@ Flow:
   - Active subscription: unlimited uploads.
 """
 import hashlib
+import hmac
 import json
 import os
 import secrets
 import sqlite3
 import time
+import urllib.request
+from html import escape as html_escape
 from datetime import datetime, timezone
 from functools import wraps
 
@@ -70,6 +73,20 @@ def get_db():
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
     return db
+
+
+def _add_column(db, table, col, ddl):
+    """Idempotent ADD COLUMN. Gunicorn runs 2 workers and both call
+    init_db() at boot, so check-then-ALTER races: the loser must ignore
+    the duplicate-column error instead of crashing the worker."""
+    cols = [r[1] for r in db.execute(f"PRAGMA table_info({table})")]
+    if col in cols:
+        return
+    try:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
 
 
 def init_db():
@@ -173,18 +190,25 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_company_services_company ON company_services(company_id);
     """)
     # Migration: Get-Paid lien_waivers signed_name (DBs created before 2026-10-11)
-    wcols = [r[1] for r in db.execute("PRAGMA table_info(lien_waivers)")]
-    if "signed_name" not in wcols:
-        db.execute("ALTER TABLE lien_waivers ADD COLUMN signed_name TEXT NOT NULL DEFAULT ''")
+    _add_column(db, "lien_waivers", "signed_name", "signed_name TEXT NOT NULL DEFAULT ''")
     # Migration: company profile fields
-    cols = [r[1] for r in db.execute("PRAGMA table_info(users)")]
     for col in ("company_name", "contact_name", "phone"):
-        if col not in cols:
-            db.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+        _add_column(db, "users", col, f"{col} TEXT NOT NULL DEFAULT ''")
     # Migration: subscription billing interval (month/year)
-    scols = [r[1] for r in db.execute("PRAGMA table_info(subscriptions)")]
-    if "billing_interval" not in scols:
-        db.execute("ALTER TABLE subscriptions ADD COLUMN billing_interval TEXT NOT NULL DEFAULT 'month'")
+    _add_column(db, "subscriptions", "billing_interval", "billing_interval TEXT NOT NULL DEFAULT 'month'")
+    # Migration: email-first save (2026-10-12): anonymous tabulations carry a
+    # random claim token; emailed set-password links use one-time tokens.
+    _add_column(db, "tabulations", "claim_token", "claim_token TEXT NOT NULL DEFAULT ''")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS password_tokens ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " user_id INTEGER NOT NULL,"
+        " token_hash TEXT NOT NULL,"
+        " purpose TEXT NOT NULL DEFAULT 'set_password',"
+        " expires_at INTEGER NOT NULL,"
+        " used_at INTEGER NOT NULL DEFAULT 0,"
+        " created_at INTEGER NOT NULL)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_password_tokens_hash ON password_tokens(token_hash)")
     db.commit()
     db.close()
 
@@ -370,6 +394,64 @@ def claim_tabulations(user_id: int, tab_ids):
         db.close()
 
 
+def create_password_token(user_id, purpose="set_password", ttl_seconds=72 * 3600):
+    """Mint a one-time token; only its hash is stored. Returns the raw token."""
+    raw = secrets.token_urlsafe(32)
+    th = hashlib.sha256(raw.encode()).hexdigest()
+    now = int(time.time())
+    db = get_db()
+    try:
+        db.execute(
+            "INSERT INTO password_tokens (user_id, token_hash, purpose, expires_at, used_at, created_at)"
+            " VALUES (?,?,?,?,0,?)",
+            (user_id, th, purpose, now + ttl_seconds, now))
+        db.commit()
+    finally:
+        db.close()
+    return raw
+
+
+def consume_password_token(raw_token, purpose="set_password"):
+    """Validate + burn a token. Returns user_id, or None if invalid/expired/used."""
+    if not raw_token:
+        return None
+    th = hashlib.sha256(raw_token.encode()).hexdigest()
+    now = int(time.time())
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT id, user_id, expires_at, used_at FROM password_tokens"
+            " WHERE token_hash=? AND purpose=?", (th, purpose)).fetchone()
+        if not row or row["used_at"] or row["expires_at"] < now:
+            return None
+        db.execute("UPDATE password_tokens SET used_at=? WHERE id=?", (now, row["id"]))
+        db.commit()
+        return row["user_id"]
+    finally:
+        db.close()
+
+
+def send_email(to, subject, body_html, text=None):
+    """Send one email via Resend. Returns True if accepted. Without a
+    RESEND_API_KEY configured, returns False so callers can degrade."""
+    key = os.environ.get("RESEND_API_KEY")
+    if not key:
+        return False
+    payload = {"from": "ClearScope Tabulator <coe@tabulator.clearscopebid.com>",
+               "to": [to], "subject": subject, "html": body_html}
+    if text:
+        payload["text"] = text
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode(),
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return 200 <= resp.status < 300
+    except Exception:
+        return False
+
+
 def list_tabulations(user_id: int):
     db = get_db()
     try:
@@ -413,6 +495,133 @@ def can_upload(user):
 
 
 def register_routes(app):
+    _SET_PASSWORD_HTML = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Set your password — ClearScope Tabulator</title>
+<style>
+ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#F5F3EF;margin:0;padding:40px 16px}
+ .card{max-width:420px;margin:0 auto;background:#fff;border-radius:18px;padding:28px;box-shadow:0 8px 30px rgba(16,42,67,.12)}
+ h1{color:#102A43;font-size:22px;margin:0 0 8px}
+ p{color:#40566b;font-size:14px;line-height:1.5}
+ label{display:block;font-size:13px;color:#102A43;margin:14px 0 4px;font-weight:600}
+ input{width:100%;box-sizing:border-box;padding:10px;border:1px solid #cbd5e1;border-radius:8px;font-size:15px}
+ button{margin-top:18px;width:100%;background:#E56A2B;color:#fff;border:0;border-radius:8px;padding:12px;font-size:15px;font-weight:700;cursor:pointer}
+ button:disabled{opacity:.6}
+ .err{color:#b91c1c;font-size:13px;margin-top:10px}
+</style></head><body>
+<div class="card">
+ <h1>Set your password</h1>
+ <p>Your tabulation is saved to your free ClearScope Tabulator account. Pick a password to sign in and open it anytime.</p>
+ <label for="pw">New password (8+ characters)</label>
+ <input id="pw" type="password" autocomplete="new-password">
+ <label for="pw2">Confirm password</label>
+ <input id="pw2" type="password" autocomplete="new-password">
+ <div id="msg" class="err"></div>
+ <button id="go">Save password &amp; open my tabulation</button>
+</div>
+<script>
+var TOKEN = "__TOKEN__";
+document.getElementById("go").onclick = function(){
+  var pw = document.getElementById("pw").value, pw2 = document.getElementById("pw2").value;
+  var msg = document.getElementById("msg");
+  if (pw.length < 8){ msg.textContent = "Password must be at least 8 characters."; return; }
+  if (pw !== pw2){ msg.textContent = "Passwords do not match."; return; }
+  var btn = this; btn.disabled = true; msg.textContent = "";
+  fetch("/api/set-password", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({token: TOKEN, password: pw})})
+  .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, body:j}; }); })
+  .then(function(res){
+    if (res.ok && res.body.ok){ location.href = "/"; }
+    else { btn.disabled = false; msg.textContent = (res.body && res.body.error) || "Something went wrong."; }
+  }).catch(function(){ btn.disabled = false; msg.textContent = "Network error — try again."; });
+};
+</script></body></html>"""
+
+    @app.post("/api/save-by-email")
+    def save_by_email():
+        """Email-first save: attach an anonymous tabulation to the account for
+        `email` (created on the spot with an unusable random password) and
+        email a one-time set-password link. Possession of the tabulation's
+        claim token (issued only to the browser that ran it) is the proof."""
+        body = request.get_json(force=True, silent=True) or {}
+        email = (body.get("email") or "").strip().lower()
+        token = (body.get("claim_token") or "").strip()
+        if "@" not in email or "." not in email.split("@")[-1]:
+            return jsonify(error="Enter a valid email address."), 400
+        if not os.environ.get("RESEND_API_KEY"):
+            return jsonify(error="email_unavailable",
+                           message="Email save isn't available right now — use the password option below instead."), 503
+        try:
+            tid = int(body.get("tabulation_id") or 0)
+        except (TypeError, ValueError):
+            tid = 0
+        db = get_db()
+        try:
+            tab = db.execute(
+                "SELECT id, user_id, claim_token, project_name FROM tabulations WHERE id=?",
+                (tid,)).fetchone()
+            if not tab:
+                return jsonify(error="Tabulation not found."), 400
+            row = db.execute("SELECT id FROM users WHERE email=?", (email,)).fetchone()
+            uid = row["id"] if row else None
+            if tab["user_id"] is None:
+                # Unclaimed: the claim token from the uploading browser is the proof.
+                if not tab["claim_token"] or not hmac.compare_digest(tab["claim_token"], token):
+                    return jsonify(error="This tabulation can't be saved that way."), 400
+                if uid is None:
+                    cur = db.execute(
+                        "INSERT INTO users (email, password_hash, created_at) VALUES (?,?,?)",
+                        (email, hash_password(secrets.token_urlsafe(24)), int(time.time())))
+                    db.commit()
+                    uid = cur.lastrowid
+                if not claim_tabulations(uid, [tid]):
+                    return jsonify(error="This tabulation was already saved."), 400
+            elif tab["user_id"] != uid:
+                return jsonify(error="This tabulation is saved to a different account."), 400
+            # else: already this email's tabulation -> fall through and re-send
+            # a fresh link (recovery if the first email never arrived).
+            project = tab["project_name"]
+        finally:
+            db.close()
+        raw = create_password_token(uid)
+        base = os.environ.get("APP_URL", "https://tabulator.clearscopebid.com").rstrip("/")
+        link = f"{base}/set-password?token={raw}"
+        body_html = (
+            f"<p>Your bid tabulation for <strong>{html_escape(project or 'your bid package')}</strong> "
+            "is saved to your free ClearScope Tabulator account.</p>"
+            f"<p><a href=\"{link}\">Set your password and open your tabulation</a></p>"
+            "<p>The link works once and expires in 72 hours. If it expires, run a new "
+            "tabulation and use the save step again — or just reply to this email.</p>"
+            "<p>— ClearScope Tabulator</p>")
+        ok = send_email(email, "Your bid tabulation is saved", body_html)
+        return jsonify(ok=True, emailed=ok)
+
+    @app.get("/set-password")
+    def set_password_page():
+        token = (request.args.get("token") or "").strip()
+        return _SET_PASSWORD_HTML.replace("__TOKEN__", token)
+
+    @app.post("/api/set-password")
+    def set_password():
+        body = request.get_json(force=True, silent=True) or {}
+        password = body.get("password") or ""
+        if len(password) < 8:
+            return jsonify(error="Password must be at least 8 characters."), 400
+        uid = consume_password_token(body.get("token") or "")
+        if not uid:
+            return jsonify(error="This link is invalid or has expired."), 400
+        db = get_db()
+        try:
+            db.execute("UPDATE users SET password_hash=? WHERE id=?",
+                       (hash_password(password), uid))
+            db.commit()
+        finally:
+            db.close()
+        session["user_id"] = uid
+        session.pop("free_used", None)
+        return jsonify(ok=True)
+
     @app.post("/api/signup")
     def signup():
         body = request.get_json(force=True, silent=True) or {}
