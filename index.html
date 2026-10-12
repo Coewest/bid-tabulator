@@ -344,11 +344,17 @@
   <div class="flex items-center justify-between flex-wrap gap-3">
     <h2 class="text-2xl font-bold" style="color:var(--navy)">Dashboard</h2>
     <div class="flex gap-2 text-sm font-semibold" id="dash-tabs">
+      <button data-dtab="suite" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">Suite</button>
       <button data-dtab="tabs" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">My tabulations</button>
       <button data-dtab="getpaid" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">Get-Paid</button>
       <button data-dtab="settings" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">Settings</button>
       <button data-dtab="admin" id="dash-tab-admin" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200 hidden">Admin</button>
     </div>
+  </div>
+
+  <!-- Suite overview tab -->
+  <div id="dtab-suite" class="mt-5 hidden">
+    <div id="suite-app"></div>
   </div>
 
   <!-- Tabulations tab -->
@@ -1340,7 +1346,7 @@
       hide("results-section"); hide("confirm-section"); hide("processing-section");
       show("dashboard-section");
       $("dash-tab-admin").classList.toggle("hidden", !authUser.is_admin);
-      switchDashTab("tabs");
+      switchDashTab("suite");
       loadTabulationList();
       loadSettings();
       loadBillingServices();
@@ -1352,13 +1358,14 @@
   }
 
   function switchDashTab(name){
-    ["tabs","getpaid","settings","admin"].forEach(function(t){
+    ["suite","tabs","getpaid","settings","admin"].forEach(function(t){
       $("dtab-"+t).classList.toggle("hidden", t!==name);
     });
     document.querySelectorAll(".dash-tab").forEach(function(b){
       b.classList.toggle("active", b.dataset.dtab===name);
     });
     if (name==="getpaid") loadGetPaid();
+    if (name==="suite") loadSuiteOverview();
   }
   document.querySelectorAll(".dash-tab").forEach(function(b){
     b.addEventListener("click", function(){ switchDashTab(b.dataset.dtab); });
@@ -1607,7 +1614,7 @@
     // Dashboard is now the logged-in home view; just refresh the list and switch to the tab.
     if (!authUser){ openAuth("login"); return; }
     renderLoggedInView();
-    switchDashTab("tabs");
+    switchDashTab("suite");
     window.scrollTo({top:0, behavior:"smooth"});
   }
   $("new-tab-btn").addEventListener("click", function(){
@@ -1661,6 +1668,160 @@
       history.replaceState(null,"",location.pathname);
     }
   })();
+
+  /* ================= GC SUITE OVERVIEW (Coe 2026-10-12) =================
+     The dashboard home: both products side by side, fed by
+     /api/suite/overview. Mirrors the approved prototype. */
+  function loadSuiteOverview(){
+    var el = $("suite-app");
+    if (!el) return;
+    el.innerHTML = '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-10 text-center">'+
+      '<div class="spinner mx-auto"></div><p class="mt-3 text-sm text-slate-500">Loading your suite…</p></div>';
+    api("/api/suite/overview").then(function(res){
+      if (!res.ok) throw new Error((res.body && res.body.error) || "Could not load");
+      el.innerHTML = suiteHtml(res.body);
+      suiteWire(res.body);
+    }).catch(function(e){
+      el.innerHTML = '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-sm text-red-700">'+
+        'Couldn’t load the suite overview: '+escapeHtml(e.message)+'</div>';
+    });
+  }
+
+  function suiteKpi(label, value, sub){
+    return '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">'+
+      '<div class="text-xs font-bold uppercase tracking-wide text-slate-400">'+label+'</div>'+
+      '<div class="text-3xl font-bold mt-1" style="color:var(--navy)">'+value+'</div>'+
+      (sub ? '<div class="text-xs mt-1 text-slate-500">'+sub+'</div>' : '')+'</div>';
+  }
+
+  function suiteHtml(d){
+    var tab = d.tabulator || {count:0, recent:[]};
+    var gp = d.getpaid || null;
+    var h = '';
+
+    /* KPI strip */
+    var wv = gp ? gp.waivers_unsigned.length : 0;
+    var blockedNote = wv ? '<span style="color:var(--orange)" class="font-semibold">'+wv+' waiver'+(wv===1?'':'s')+
+      ' holding up '+gp.draws_blocked+' draw'+(gp.draws_blocked===1?'':'s')+'</span>' : 'Nothing overdue';
+    h += '<div class="grid grid-cols-2 md:grid-cols-4 gap-4">'+
+      suiteKpi("Bid packages leveled", String(tab.count), tab.count ? "Saved tabulations" : "Your first one is free")+
+      suiteKpi("Billed to date", gp ? gpMoney(gp.totals.billed) : "—", gp ? "Submitted + paid draws" : "Get-Paid inactive")+
+      suiteKpi("Collected", gp ? gpMoney(gp.totals.collected) : "—", gp ? "Paid draws" : "Get-Paid inactive")+
+      suiteKpi("Outstanding", gp ? gpMoney(gp.totals.outstanding) : "—", gp ? blockedNote : "Get-Paid inactive")+
+      '</div>';
+
+    /* Two product panels */
+    h += '<div class="grid md:grid-cols-2 gap-5 mt-5">';
+
+    /* — Bid Tabulator panel — */
+    h += '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">'+
+      '<div class="flex items-center justify-between">'+
+      '<h3 class="text-lg font-bold" style="color:var(--navy)"><span style="display:inline-block;width:10px;height:10px;border-radius:99px;background:#0e7490;margin-right:8px"></span>Bid Tabulator</h3>'+
+      '<span class="text-xs font-bold text-slate-400">$129/mo</span></div>'+
+      '<p class="text-sm text-slate-500 mt-1">Level sub bids side by side in minutes.</p>';
+    if (tab.recent.length){
+      h += '<div class="mt-4 space-y-2">' + tab.recent.slice(0,5).map(function(t){
+        var dt = new Date(t.created_at*1000).toLocaleDateString("en-US",{month:"short",day:"numeric"});
+        var meta = dt + (t.bidders ? ' · '+t.bidders+' bidder'+(t.bidders===1?'':'s') : '') +
+          (t.low_total!=null ? ' · low '+gpMoney(t.low_total) : '');
+        return '<button data-stab="'+t.id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
+          '<span class="font-semibold text-sm">'+escapeHtml(t.project_name||"Bid package")+'</span>'+
+          '<span class="text-xs text-slate-400 whitespace-nowrap ml-3">'+meta+' →</span></button>';
+      }).join("") + '</div>';
+    } else {
+      h += '<p class="text-sm text-slate-500 mt-4">No tabulations yet — upload your first bid package free.</p>';
+    }
+    h += '<div class="flex gap-2 mt-5">'+
+      '<button id="suite-new-tab" class="btn-primary px-4 py-2 text-sm">+ New tabulation</button>'+
+      '<button id="suite-all-tabs" class="px-4 py-2 text-sm font-semibold border border-slate-300 rounded-lg">View all</button>'+
+      '</div></div>';
+
+    /* — Get-Paid panel — */
+    h += '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">'+
+      '<div class="flex items-center justify-between">'+
+      '<h3 class="text-lg font-bold" style="color:var(--navy)"><span style="display:inline-block;width:10px;height:10px;border-radius:99px;background:#15803d;margin-right:8px"></span>Get-Paid Suite</h3>'+
+      '<span class="text-xs font-bold text-slate-400">$99/mo</span></div>'+
+      '<p class="text-sm text-slate-500 mt-1">Pay applications + lien waivers, without the chase.</p>';
+    if (!gp){
+      h += '<p class="text-sm text-slate-600 mt-4">Generate AIA-style pay apps from a schedule of values, '+
+        'with retainage math done for you — and see exactly which sub is holding up your draw.</p>'+
+        '<div class="flex gap-2 mt-5"><button id="suite-gp-open" class="btn-primary px-4 py-2 text-sm">See Get-Paid</button></div>'+
+        '<p class="text-xs text-slate-400 mt-3">Or get both together: <strong>GC Suite $179/mo</strong> (save $49/mo).</p>';
+    } else if (!gp.projects.length){
+      h += '<p class="text-sm text-slate-500 mt-4">No projects yet — add your first project to start a draw.</p>'+
+        '<div class="flex gap-2 mt-5"><button id="suite-gp-open" class="btn-primary px-4 py-2 text-sm">Open Get-Paid</button></div>';
+    } else {
+      h += '<div class="grid grid-cols-3 gap-3 mt-4 text-center">'+
+        '<div><div class="text-xs font-bold uppercase text-slate-400">Billed</div><div class="font-bold" style="color:var(--navy)">'+gpMoney(gp.totals.billed)+'</div></div>'+
+        '<div><div class="text-xs font-bold uppercase text-slate-400">Collected</div><div class="font-bold" style="color:#15803d">'+gpMoney(gp.totals.collected)+'</div></div>'+
+        '<div><div class="text-xs font-bold uppercase text-slate-400">Outstanding</div><div class="font-bold" style="color:var(--orange)">'+gpMoney(gp.totals.outstanding)+'</div></div></div>';
+      h += '<div class="mt-4 space-y-2">' + gp.projects.slice(0,5).map(function(p){
+        var right = p.outstanding > 0 ? '<span style="color:var(--orange)" class="font-semibold">'+gpMoney(p.outstanding)+' out</span>'
+          : (p.draws ? '<span style="color:#15803d" class="font-semibold">Paid up</span>' : '<span class="text-slate-400">No draws</span>');
+        return '<button data-sgp="'+p.id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
+          '<span><span class="font-semibold text-sm">'+escapeHtml(p.name)+'</span>'+
+          '<span class="block text-xs text-slate-400">'+escapeHtml(p.client_name||"")+(p.client_name?' · ':'')+p.draws+' draw'+(p.draws===1?'':'s')+'</span></span>'+
+          '<span class="text-xs whitespace-nowrap ml-3">'+right+' →</span></button>';
+      }).join("") + '</div>';
+      h += '<div class="flex gap-2 mt-5"><button id="suite-gp-open" class="px-4 py-2 text-sm font-semibold border border-slate-300 rounded-lg">Open Get-Paid</button></div>';
+    }
+    h += '</div></div>';
+
+    /* Needs attention — unsigned waivers */
+    if (gp && gp.waivers_unsigned.length){
+      h += '<div class="bg-white rounded-xl shadow-sm border border-slate-200 border-l-4 p-6 mt-5" style="border-left-color:var(--orange)">'+
+        '<h3 class="text-lg font-bold" style="color:var(--navy)">Needs attention</h3>'+
+        '<p class="text-sm text-slate-500 mt-1">'+gp.waivers_unsigned.length+' unsigned waiver'+(gp.waivers_unsigned.length===1?'':'s')+
+        ' holding up '+gp.draws_blocked+' draw'+(gp.draws_blocked===1?'':'s')+'.</p>'+
+        '<div class="mt-4 space-y-2">' + gp.waivers_unsigned.slice(0,6).map(function(w){
+          return '<button data-sgp="'+w.project_id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
+            '<span class="text-sm">'+gpPill(w.status)+' <strong>'+escapeHtml(w.sub_name)+'</strong>'+
+            '<span class="text-slate-500"> — '+escapeHtml(gpKindLabel(w.waiver_kind))+' '+escapeHtml(gpScopeLabel(w.waiver_scope))+
+            ' · '+escapeHtml(w.project_name)+' · Draw #'+w.draw_number+'</span></span>'+
+            '<span class="text-sm font-semibold whitespace-nowrap ml-3">'+gpMoney(w.amount)+'</span></button>';
+        }).join("") + '</div></div>';
+    }
+
+    /* Pipeline strip */
+    if (gp){
+      var st = gp.stage;
+      function stageBox(label, n, sub){
+        return '<div class="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 p-4 text-center">'+
+          '<div class="text-2xl font-bold" style="color:var(--navy)">'+n+'</div>'+
+          '<div class="text-xs font-bold uppercase tracking-wide text-slate-400 mt-1">'+label+'</div>'+
+          '<div class="text-xs text-slate-400">'+sub+'</div></div>';
+      }
+      h += '<div class="flex items-stretch gap-2 md:gap-3 mt-5">'+
+        stageBox("Leveled", tab.count, "bid packages")+
+        '<div class="self-center text-slate-300 font-bold">→</div>'+
+        stageBox("In billing", st.in_billing, "projects w/ draws")+
+        '<div class="self-center text-slate-300 font-bold">→</div>'+
+        stageBox("Submitted", st.submitted, "draws awaiting pay")+
+        '<div class="self-center text-slate-300 font-bold">→</div>'+
+        stageBox("Paid", st.paid, "draws collected")+
+        '</div>';
+    }
+    return h;
+  }
+
+  function suiteWire(d){
+    var el = $("suite-app");
+    el.querySelectorAll("[data-stab]").forEach(function(b){
+      b.addEventListener("click", function(){ loadTabulation(Number(b.dataset.stab)); });
+    });
+    el.querySelectorAll("[data-sgp]").forEach(function(b){
+      b.addEventListener("click", function(){
+        gp.openProjectId = Number(b.dataset.sgp);
+        switchDashTab("getpaid");
+      });
+    });
+    var nt = $("suite-new-tab");
+    if (nt) nt.addEventListener("click", function(){ $("new-tab-btn").click(); });
+    var at = $("suite-all-tabs");
+    if (at) at.addEventListener("click", function(){ switchDashTab("tabs"); });
+    var go = $("suite-gp-open");
+    if (go) go.addEventListener("click", function(){ switchDashTab("getpaid"); });
+  }
 
   /* ================= GET-PAID SUITE (Coe 2026-10-11) ================= */
   var waiverToken = (function(){
@@ -1727,6 +1888,7 @@
       gp.subscribed = true;
       gp.projects = Array.isArray(res.body) ? res.body : (res.body.projects||[]);
       gpRender();
+      if (gp.openProjectId){ var pid = gp.openProjectId; gp.openProjectId = null; loadGpProject(pid); }
     }).catch(function(e){ $("gp-app").innerHTML = gpErr(e); });
   }
 
