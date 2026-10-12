@@ -2018,6 +2018,18 @@ def upload():
                 data["tabulation_id"] = tab_id
                 data["saved"] = bool(uid)
                 data["account_status"] = reason
+                if not uid:
+                    # Anonymous run: mint a claim token so the email-first
+                    # save step can prove this browser ran this tabulation.
+                    claim_token = secrets.token_hex(16)
+                    _db = auth_billing.get_db()
+                    try:
+                        _db.execute("UPDATE tabulations SET claim_token=? WHERE id=?",
+                                    (claim_token, tab_id))
+                        _db.commit()
+                    finally:
+                        _db.close()
+                    data["claim_token"] = claim_token
                 resp = jsonify(data)
                 if not user:
                     session["free_used"] = True
