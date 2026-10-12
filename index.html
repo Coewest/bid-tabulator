@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Bid Tabulator — Level Sub Bids in Minutes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <meta name="description" content="Upload subcontractor bids. Get a side-by-side leveled comparison in minutes." />
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
@@ -62,6 +63,127 @@
   tr.totals-row td.sticky-col { background:#f1f5f9; }
   .mono { font-variant-numeric:tabular-nums; font-family:ui-monospace, monospace; }
   .dash-tab.active { background:var(--navy); color:#fff; border-color:var(--navy); }
+  /* ===== GC Suite overview (prototype port, Coe 2026-10-12) ===== */
+  #suite-app { --s-bg:#F5F3EF; --s-card:#FFFFFF; --s-navy:#102A43; --s-navy2:#0B1E32; --s-orange:#E56A2B; --s-teal:#0E7490; --s-green:#0F766E; --s-ink:#1E2A36; --s-dim:#68707A; --s-line:#E7E1D6; --s-track:#EDE8DD; font-family:"Plus Jakarta Sans",system-ui,sans-serif; color:var(--s-ink); }
+  #suite-app .num { font-family:"IBM Plex Mono",ui-monospace,monospace; font-weight:600; }
+  .suite-wrap { background:var(--s-bg); border-radius:24px; padding:26px; box-shadow:inset 0 0 0 1px var(--s-line); }
+  .suite-loading { padding:3rem 0; text-align:center; color:var(--s-dim); font-size:14px; }
+  .suite-card { background:var(--s-card); border:1px solid var(--s-line); border-radius:18px; box-shadow:0 1px 3px rgba(16,42,67,.07), 0 10px 30px -18px rgba(16,42,67,.25); }
+  .suite-err { padding:1.5rem; color:#b91c1c; font-size:14px; }
+  .suite-hero { margin-bottom:20px; }
+  .suite-eyebrow { font-size:11px; font-weight:800; letter-spacing:.14em; color:var(--s-orange); }
+  .suite-h { font-family:"Archivo",sans-serif; font-weight:800; font-size:30px; line-height:1.15; color:var(--s-navy); margin:6px 0 6px; letter-spacing:-.01em; }
+  .suite-orange { color:var(--s-orange); }
+  .suite-intro { font-size:14.5px; color:var(--s-dim); max-width:560px; line-height:1.55; }
+  .suite-hero-top { display:flex; justify-content:space-between; gap:20px; align-items:flex-start; flex-wrap:wrap; }
+  .suite-bundle { background:var(--s-navy2); color:#fff; border-radius:16px; padding:12px 18px; text-align:left; box-shadow:0 10px 24px -12px rgba(11,30,50,.55); }
+  .suite-bundle span { display:block; font-size:10.5px; font-weight:800; letter-spacing:.12em; color:#F5A623; text-transform:uppercase; }
+  .suite-bundle strong { display:block; font-family:"Archivo",sans-serif; font-size:22px; font-weight:800; margin:2px 0; }
+  .suite-bundle em { font-style:normal; font-size:11.5px; color:#B9C6D2; }
+  .suite-hero-row { display:flex; justify-content:space-between; align-items:center; gap:14px; flex-wrap:wrap; margin-top:18px; }
+  .suite-seg { display:inline-flex; background:#EAE5D9; border-radius:9999px; padding:4px; gap:2px; }
+  .suite-seg button { border:0; background:transparent; padding:7px 16px; border-radius:9999px; font-size:13px; font-weight:700; color:var(--s-dim); cursor:pointer; font-family:inherit; }
+  .suite-seg button.on { background:var(--s-navy); color:#fff; box-shadow:0 2px 8px rgba(16,42,67,.3); }
+  .suite-actions { display:flex; gap:8px; flex-wrap:wrap; }
+  .suite-btn { border-radius:10px; padding:9px 16px; font-size:13.5px; font-weight:700; cursor:pointer; font-family:inherit; border:1px solid transparent; transition:transform .05s ease, box-shadow .15s ease; }
+  .suite-btn:active { transform:translateY(1px); }
+  .suite-btn.orange { background:var(--s-orange); color:#fff; box-shadow:0 6px 16px -6px rgba(229,106,43,.7); }
+  .suite-btn.navy { background:var(--s-navy); color:#fff; }
+  .suite-btn.ghost { background:transparent; color:var(--s-navy); border-color:#C9CFd6; border-color:#C9CFD6; }
+  .suite-btn.sm { padding:8px 14px; font-size:13px; }
+  .suite-kpis { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:18px; }
+  .suite-kpi { background:var(--s-card); border:1px solid var(--s-line); border-radius:16px; padding:16px 18px; box-shadow:0 1px 3px rgba(16,42,67,.07), 0 10px 26px -18px rgba(16,42,67,.25); }
+  .suite-kpi-label { font-size:11px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; color:var(--s-dim); }
+  .suite-kpi-value { font-family:"Archivo",sans-serif; font-size:29px; font-weight:800; color:var(--s-navy); margin:5px 0 3px; }
+  .suite-kpi-sub { font-size:12px; font-weight:600; line-height:1.4; }
+  .suite-panels { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  .suite-panel { border-top:4px solid; border-radius:20px; padding:22px; display:flex; flex-direction:column; transition:opacity .2s ease, filter .2s ease; }
+  .suite-dim { opacity:.42; filter:saturate(.55); }
+  .suite-panel-head { display:flex; gap:14px; align-items:flex-start; }
+  .suite-tile { width:52px; height:52px; border-radius:14px; flex:none; display:flex; align-items:center; justify-content:center; box-shadow:0 8px 18px -8px rgba(16,42,67,.5); }
+  .suite-tile svg { width:27px; height:27px; }
+  .suite-panel-titles { flex:1; min-width:0; }
+  .suite-panel-name { font-size:11px; font-weight:800; letter-spacing:.13em; color:var(--s-dim); }
+  .suite-panel-tag { font-family:"Archivo",sans-serif; font-size:19px; font-weight:700; color:var(--s-navy); line-height:1.25; margin-top:3px; }
+  .suite-price { text-align:right; flex:none; }
+  .suite-price strong { font-family:"Archivo",sans-serif; font-size:24px; font-weight:800; color:var(--s-navy); }
+  .suite-price span { display:block; font-size:11px; color:var(--s-dim); font-weight:600; }
+  .suite-price .suite-status { display:inline-block; margin-top:6px; font-size:10px; font-weight:800; letter-spacing:.07em; padding:3px 9px; border-radius:9999px; }
+  .suite-stats { display:grid; grid-template-columns:repeat(3,1fr); margin:18px 0 6px; border-top:1px solid var(--s-line); border-bottom:1px solid var(--s-line); }
+  .suite-stats > div { padding:11px 6px; text-align:center; }
+  .suite-stats > div + div { border-left:1px solid var(--s-line); }
+  .suite-stats span { display:block; font-size:10.5px; font-weight:800; letter-spacing:.09em; text-transform:uppercase; color:var(--s-dim); }
+  .suite-stats strong { display:block; font-family:"Archivo",sans-serif; font-size:17.5px; font-weight:800; color:var(--s-navy); margin-top:3px; }
+  .suite-rows { margin-top:10px; display:flex; flex-direction:column; gap:8px; }
+  .suite-row { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; text-align:left; background:#FBFAF6; border:1px solid var(--s-line); border-radius:12px; padding:11px 14px; cursor:pointer; font-family:inherit; }
+  .suite-row:hover { border-color:var(--s-orange); }
+  .suite-row-main strong { display:block; font-size:14px; font-weight:700; color:var(--s-ink); }
+  .suite-row-main span { display:block; font-size:12px; color:var(--s-dim); margin-top:1px; }
+  .suite-row-side { display:flex; flex-direction:column; align-items:flex-end; gap:6px; flex:none; }
+  .suite-bar { display:block; width:86px; height:6px; border-radius:9999px; background:var(--s-track); overflow:hidden; }
+  .suite-bar span { display:block; height:100%; border-radius:9999px; }
+  .suite-stage { font-size:9.5px; font-weight:800; letter-spacing:.07em; padding:3px 8px; border-radius:9999px; white-space:nowrap; }
+  .suite-mini { margin-top:16px; }
+  .suite-mini-title { font-size:11px; font-weight:800; letter-spacing:.09em; text-transform:uppercase; color:var(--s-dim); margin-bottom:7px; }
+  .suite-mini-dim { color:var(--s-dim); font-weight:500; }
+  .suite-table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  .suite-table td { padding:7px 9px; border-top:1px solid var(--s-line); }
+  .suite-table td.num { text-align:right; }
+  .suite-table td.pillcell { text-align:right; width:1%; }
+  .suite-table tr.low td { background:#0F766E12; font-weight:700; }
+  .suite-lowtag { background:var(--s-green); color:#fff; font-size:9px; font-weight:800; letter-spacing:.06em; padding:2px 6px; border-radius:5px; vertical-align:2px; }
+  .suite-empty { font-size:13.5px; color:var(--s-dim); line-height:1.6; margin-top:14px; }
+  .suite-panel-foot { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:auto; padding-top:18px; font-size:12.5px; color:var(--s-dim); font-weight:600; }
+  .suite-lower { display:grid; grid-template-columns:2fr 1fr; gap:18px; margin-top:18px; align-items:start; }
+  .suite-pipeline, .suite-attn, .suite-money { padding:20px 22px; }
+  .suite-lower-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+  .suite-lower-head h3 { font-family:"Archivo",sans-serif; font-size:16.5px; font-weight:700; color:var(--s-navy); }
+  #suite-search { border:1px solid var(--s-line); background:#FBFAF6; border-radius:9px; padding:7px 12px; font-size:13px; font-family:inherit; width:190px; color:var(--s-ink); }
+  .suite-pipe-row { display:grid; grid-template-columns:1.5fr auto 110px 90px; align-items:center; gap:14px; padding:10px 0; border-top:1px solid var(--s-line); }
+  .suite-pipe-name { background:none; border:0; text-align:left; cursor:pointer; font-family:inherit; padding:0; min-width:0; }
+  .suite-pipe-name strong { display:block; font-size:14px; font-weight:700; color:var(--s-ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .suite-pipe-name span { display:block; font-size:12px; color:var(--s-dim); }
+  .suite-pipe-name:hover strong { color:var(--s-orange); }
+  .suite-pipe-bar .suite-bar { width:110px; }
+  .suite-pipe-val { text-align:right; font-size:13.5px; }
+  .suite-side { display:flex; flex-direction:column; gap:18px; }
+  .suite-urgent { background:#E56A2B1f; color:var(--s-orange); font-size:10.5px; font-weight:800; letter-spacing:.06em; padding:3px 9px; border-radius:9999px; text-transform:uppercase; }
+  .suite-attn-rows { display:flex; flex-direction:column; }
+  .suite-attn-row { display:flex; justify-content:space-between; align-items:center; gap:10px; width:100%; text-align:left; background:none; border:0; border-top:1px solid var(--s-line); padding:10px 0; cursor:pointer; font-family:inherit; font-size:13.5px; color:var(--s-ink); }
+  .suite-attn-row:hover strong { color:var(--s-orange); }
+  .suite-attn-note { font-size:12.5px; color:var(--s-dim); margin-top:10px; }
+  .suite-money-flex { display:flex; gap:16px; align-items:center; }
+  .suite-donut-pct { font-family:"Archivo",sans-serif; font-size:17px; font-weight:800; fill:var(--s-navy); }
+  .suite-donut-sub { font-size:8px; font-weight:700; fill:var(--s-dim); letter-spacing:.08em; text-transform:uppercase; }
+  .suite-legend { flex:1; display:flex; flex-direction:column; gap:7px; font-size:12.5px; color:var(--s-dim); font-weight:600; }
+  .suite-legend div { display:flex; align-items:center; gap:8px; }
+  .suite-legend i { width:10px; height:10px; border-radius:3px; flex:none; }
+  .suite-legend strong { margin-left:auto; color:var(--s-ink); font-size:13px; }
+  .suite-draws { margin-top:14px; border-top:1px solid var(--s-line); }
+  .suite-draw-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--s-line); font-size:13px; }
+  .suite-draw-row:last-child { border-bottom:0; }
+  .suite-draw-row .num { margin-left:auto; }
+  @media (prefers-color-scheme: dark) {
+    #suite-app { --s-bg:#0D1720; --s-card:#15222E; --s-ink:#E8EDF2; --s-dim:#9FB0BD; --s-line:#26313D; --s-track:#22303D; }
+    .suite-h, .suite-kpi-value, .suite-panel-tag, .suite-price strong, .suite-stats strong, .suite-lower-head h3, .suite-donut-pct { color:#F2F6FA; }
+    .suite-row, #suite-search { background:#1A2936; }
+    .suite-bundle { background:#0B1E32; box-shadow:inset 0 0 0 1px #26313D; }
+    .suite-seg { background:#1A2936; }
+    .suite-btn.ghost { color:#E8EDF2; border-color:#33424F; }
+    .suite-legend strong, .suite-row-main strong, .suite-pipe-name strong, .suite-attn-row { color:#E8EDF2; }
+  }
+  @media (max-width: 900px) {
+    .suite-kpis { grid-template-columns:repeat(2,1fr); }
+    .suite-panels, .suite-lower { grid-template-columns:1fr; }
+  }
+  @media (max-width: 560px) {
+    .suite-wrap { padding:16px; }
+    .suite-h { font-size:24px; }
+    .suite-pipe-row { grid-template-columns:1fr auto; }
+    .suite-pipe-bar, .suite-pipe-val { display:none; }
+    #suite-search { width:140px; }
+  }
+
   .modal-backdrop { background:rgba(7,27,46,.55); }
   input[type=text], input[type=number] { outline:none; }
   input[type=text]:focus, input[type=number]:focus { border-color:var(--orange);
@@ -1670,141 +1792,281 @@
   })();
 
   /* ================= GC SUITE OVERVIEW (Coe 2026-10-12) =================
-     The dashboard home: both products side by side, fed by
-     /api/suite/overview. Mirrors the approved prototype. */
+     Faithful port of the approved GC Suite prototype, bound to live data
+     from /api/suite/overview. Design tokens: cream #F5F3EF, navy #102A43 /
+     #0B1E32, orange #E56A2B, teal #0E7490, green #0F766E; Archivo headlines,
+     Plus Jakarta Sans body, IBM Plex Mono numbers. */
+  var suiteSeg = "suite";
+
   function loadSuiteOverview(){
     var el = $("suite-app");
     if (!el) return;
-    el.innerHTML = '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-10 text-center">'+
-      '<div class="spinner mx-auto"></div><p class="mt-3 text-sm text-slate-500">Loading your suite…</p></div>';
+    el.innerHTML = '<div class="suite-wrap"><div class="suite-loading">Loading your suite…</div></div>';
     api("/api/suite/overview").then(function(res){
       if (!res.ok) throw new Error((res.body && res.body.error) || "Could not load");
       el.innerHTML = suiteHtml(res.body);
-      suiteWire(res.body);
+      suiteWire();
+      applySeg();
     }).catch(function(e){
-      el.innerHTML = '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-8 text-sm text-red-700">'+
-        'Couldn’t load the suite overview: '+escapeHtml(e.message)+'</div>';
+      el.innerHTML = '<div class="suite-wrap"><div class="suite-card suite-err">Couldn’t load the suite overview: '+
+        escapeHtml(e.message)+'</div></div>';
     });
   }
 
-  function suiteKpi(label, value, sub){
-    return '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-5">'+
-      '<div class="text-xs font-bold uppercase tracking-wide text-slate-400">'+label+'</div>'+
-      '<div class="text-3xl font-bold mt-1" style="color:var(--navy)">'+value+'</div>'+
-      (sub ? '<div class="text-xs mt-1 text-slate-500">'+sub+'</div>' : '')+'</div>';
+  function suiteGreeting(){
+    var h = new Date().getHours();
+    var g = h < 12 ? "Good morning" : (h < 18 ? "Good afternoon" : "Good evening");
+    var name = ((authUser && authUser.contact_name) || "").trim();
+    return g + (name ? ", " + escapeHtml(name.split(/\s+/)[0]) : "") + ".";
+  }
+
+  function suiteBar(pct, color){
+    var p = Math.max(0, Math.min(100, pct == null ? 0 : pct));
+    return '<div class="suite-bar"><span style="width:'+p+'%;background:'+color+'"></span></div>';
+  }
+
+  function suiteKpi(label, value, sub, subColor){
+    return '<div class="suite-kpi"><div class="suite-kpi-label">'+label+'</div>'+
+      '<div class="suite-kpi-value">'+value+'</div>'+
+      '<div class="suite-kpi-sub" style="color:'+subColor+'">'+sub+'</div></div>';
+  }
+
+  function suiteStagePill(text, color){
+    return '<span class="suite-stage" style="background:'+color+'1f;color:'+color+'">'+text+'</span>';
   }
 
   function suiteHtml(d){
-    var tab = d.tabulator || {count:0, recent:[]};
+    var tab = d.tabulator || {count:0, recent:[], low_total_sum:0, latest:null};
     var gp = d.getpaid || null;
-    var h = '';
+    var company = ((authUser && authUser.company_name) || "").trim();
+    var subbed = authUser && authUser.subscription === "active";
+    var h = '<div class="suite-wrap">';
 
-    /* KPI strip */
-    var wv = gp ? gp.waivers_unsigned.length : 0;
-    var blockedNote = wv ? '<span style="color:var(--orange)" class="font-semibold">'+wv+' waiver'+(wv===1?'':'s')+
-      ' holding up '+gp.draws_blocked+' draw'+(gp.draws_blocked===1?'':'s')+'</span>' : 'Nothing overdue';
-    h += '<div class="grid grid-cols-2 md:grid-cols-4 gap-4">'+
-      suiteKpi("Bid packages leveled", String(tab.count), tab.count ? "Saved tabulations" : "Your first one is free")+
-      suiteKpi("Billed to date", gp ? gpMoney(gp.totals.billed) : "—", gp ? "Submitted + paid draws" : "Get-Paid inactive")+
-      suiteKpi("Collected", gp ? gpMoney(gp.totals.collected) : "—", gp ? "Paid draws" : "Get-Paid inactive")+
-      suiteKpi("Outstanding", gp ? gpMoney(gp.totals.outstanding) : "—", gp ? blockedNote : "Get-Paid inactive")+
+    /* ---------- hero ---------- */
+    h += '<div class="suite-hero">'+
+      '<div class="suite-hero-top"><div>'+
+      '<div class="suite-eyebrow">GC SUITE · ONE LOGIN · TWO TOOLS</div>'+
+      '<h2 class="suite-h">'+suiteGreeting()+' Both tools, <span class="suite-orange">one home.</span></h2>'+
+      '<p class="suite-intro">'+(company ? escapeHtml(company)+" — " : "")+
+      'level the bids, send the pay apps, and chase the waivers from one place. No more Excel archaeology.</p>'+
+      '</div>'+
+      '<div class="suite-bundle"><span>Suite Bundle</span><strong>$179/mo</strong><em>Saves $49/mo vs separate</em></div>'+
+      '</div>'+
+      '<div class="suite-hero-row">'+
+      '<div class="suite-seg" role="group" aria-label="Suite view">'+
+      '<button data-seg="suite">Suite overview</button>'+
+      '<button data-seg="tab">Tabulator only</button>'+
+      '<button data-seg="gp">Get-Paid only</button></div>'+
+      '<div class="suite-actions">'+
+      '<button id="suite-sov" class="suite-btn ghost">+ SOV Builder</button>'+
+      '<button id="suite-new-payapp" class="suite-btn navy">+ New Pay App</button>'+
+      '<button id="suite-new-tab" class="suite-btn orange">+ New Tabulation</button>'+
+      '</div></div></div>';
+
+    /* ---------- KPI strip ---------- */
+    var latest = tab.latest;
+    var k1sub = latest ? "Latest: "+escapeHtml(latest.project_name || "Bid package") : "Your first one is free";
+    var un = gp ? gp.waivers_unsigned.length : 0;
+    h += '<div class="suite-kpis">'+
+      suiteKpi("Packages leveled ↗ Tabulator", String(tab.count), k1sub, "#0E7490")+
+      suiteKpi("Low-bid total", gpMoney(tab.low_total_sum), "Ready to award across "+tab.count+" package"+(tab.count===1?"":"s"), "#0E7490")+
+      suiteKpi("Outstanding draws ↗ Get-Paid", gp ? gpMoney(gp.totals.outstanding) : "—",
+        gp ? gpMoney(gp.totals.billed)+" billed · "+gpMoney(gp.totals.collected)+" collected" : "Get-Paid inactive", "#0F766E")+
+      suiteKpi("Blocking pay apps ⚠ Get-Paid", gp ? String(un) : "—",
+        gp ? (un ? "Unsigned waiver"+(un===1?"":"s")+" holding up "+gp.draws_blocked+" draw"+(gp.draws_blocked===1?"":"s") : "All clear — nothing blocking") : "Get-Paid inactive",
+        un ? "#E56A2B" : "#0F766E")+
       '</div>';
 
-    /* Two product panels */
-    h += '<div class="grid md:grid-cols-2 gap-5 mt-5">';
+    /* ---------- product panels ---------- */
+    h += '<div class="suite-panels">';
 
-    /* — Bid Tabulator panel — */
-    h += '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">'+
-      '<div class="flex items-center justify-between">'+
-      '<h3 class="text-lg font-bold" style="color:var(--navy)"><span style="display:inline-block;width:10px;height:10px;border-radius:99px;background:#0e7490;margin-right:8px"></span>Bid Tabulator</h3>'+
-      '<span class="text-xs font-bold text-slate-400">$129/mo</span></div>'+
-      '<p class="text-sm text-slate-500 mt-1">Level sub bids side by side in minutes.</p>';
+    /* — Tabulator — */
+    var tabStatus = subbed ? "SUBSCRIBED" : (tab.count ? "FREE TAB USED" : "FIRST TAB FREE");
+    h += '<section class="suite-card suite-panel" id="suite-panel-tab" style="border-top-color:#0E7490">'+
+      '<div class="suite-panel-head">'+
+      '<div class="suite-tile" style="background:#0E7490"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M4 5h16M4 12h16M4 19h16M9 5v14M16 5v14"/></svg></div>'+
+      '<div class="suite-panel-titles"><div class="suite-panel-name">BID TABULATOR</div>'+
+      '<div class="suite-panel-tag">Level bids in minutes, not a day in Excel.</div></div>'+
+      '<div class="suite-price"><strong>$129</strong><span>/ mo · unlimited users</span>'+
+      '<span class="suite-status" style="background:#0E74901f;color:#0E7490">'+tabStatus+'</span></div></div>'+
+      '<div class="suite-stats">'+
+      '<div><span>Packages</span><strong>'+tab.count+'</strong></div>'+
+      '<div><span>Low-bid total</span><strong>'+gpMoney(tab.low_total_sum)+'</strong></div>'+
+      '<div><span>Bidders · latest</span><strong>'+(latest ? latest.bidders.length : "—")+'</strong></div></div>';
     if (tab.recent.length){
-      h += '<div class="mt-4 space-y-2">' + tab.recent.slice(0,5).map(function(t){
+      h += '<div class="suite-rows">' + tab.recent.slice(0,3).map(function(t){
         var dt = new Date(t.created_at*1000).toLocaleDateString("en-US",{month:"short",day:"numeric"});
-        var meta = dt + (t.bidders ? ' · '+t.bidders+' bidder'+(t.bidders===1?'':'s') : '') +
-          (t.low_total!=null ? ' · low '+gpMoney(t.low_total) : '');
-        return '<button data-stab="'+t.id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
-          '<span class="font-semibold text-sm">'+escapeHtml(t.project_name||"Bid package")+'</span>'+
-          '<span class="text-xs text-slate-400 whitespace-nowrap ml-3">'+meta+' →</span></button>';
+        var badge = t.rank_state === "needs_review"
+          ? suiteStagePill("NEEDS REVIEW", "#E56A2B") : suiteStagePill("LEVELED", "#0E7490");
+        return '<button class="suite-row" data-stab="'+t.id+'">'+
+          '<span class="suite-row-main"><strong>'+escapeHtml(t.project_name||"Bid package")+'</strong>'+
+          '<span>'+dt+' · '+t.bidders+' bidder'+(t.bidders===1?"":"s")+(t.low_total!=null ? ' · low '+gpMoney(t.low_total) : '')+'</span></span>'+
+          '<span class="suite-row-side">'+suiteBar(t.completeness, "#0E7490")+badge+'</span></button>';
       }).join("") + '</div>';
     } else {
-      h += '<p class="text-sm text-slate-500 mt-4">No tabulations yet — upload your first bid package free.</p>';
+      h += '<p class="suite-empty">No tabulations yet — upload your first bid package and watch it level itself.</p>';
     }
-    h += '<div class="flex gap-2 mt-5">'+
-      '<button id="suite-new-tab" class="btn-primary px-4 py-2 text-sm">+ New tabulation</button>'+
-      '<button id="suite-all-tabs" class="px-4 py-2 text-sm font-semibold border border-slate-300 rounded-lg">View all</button>'+
-      '</div></div>';
+    if (latest && latest.bidders.length){
+      h += '<div class="suite-mini"><div class="suite-mini-title">Leveled bids — '+escapeHtml(latest.project_name||"Bid package")+'</div>'+
+        '<table class="suite-table"><tbody>' + latest.bidders.map(function(b){
+          return '<tr'+(b.low ? ' class="low"' : '')+'><td>'+escapeHtml(b.name)+(b.low ? ' <span class="suite-lowtag">LOW</span>' : '')+
+            '</td><td class="num">'+(b.total!=null ? gpMoney(b.total) : "—")+'</td></tr>';
+        }).join("") + '</tbody></table></div>';
+    }
+    h += '<div class="suite-panel-foot"><span>'+tab.count+' saved tabulation'+(tab.count===1?"":"s")+'</span>'+
+      '<button id="suite-open-tabs" class="suite-btn navy sm">Open Tabulator →</button></div></section>';
 
-    /* — Get-Paid panel — */
-    h += '<div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">'+
-      '<div class="flex items-center justify-between">'+
-      '<h3 class="text-lg font-bold" style="color:var(--navy)"><span style="display:inline-block;width:10px;height:10px;border-radius:99px;background:#15803d;margin-right:8px"></span>Get-Paid Suite</h3>'+
-      '<span class="text-xs font-bold text-slate-400">$99/mo</span></div>'+
-      '<p class="text-sm text-slate-500 mt-1">Pay applications + lien waivers, without the chase.</p>';
+    /* — Get-Paid — */
+    var gpStatus = gp ? "ACTIVE" : "NOT ACTIVE";
+    var gpDrawsLive = gp ? gp.projects.reduce(function(s,p){ return s + p.draws; }, 0) : 0;
+    h += '<section class="suite-card suite-panel" id="suite-panel-gp" style="border-top-color:#0F766E">'+
+      '<div class="suite-panel-head">'+
+      '<div class="suite-tile" style="background:#0F766E"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v10M15 9.2c-.6-1-1.7-1.4-3-1.4-1.8 0-3 .9-3 2.2 0 3 6 1.6 6 4.2 0 1.3-1.3 2.2-3 2.2-1.3 0-2.5-.5-3.1-1.5"/></svg></div>'+
+      '<div class="suite-panel-titles"><div class="suite-panel-name">GET-PAID SUITE</div>'+
+      '<div class="suite-panel-tag">Pay apps &amp; waivers without the chase.</div></div>'+
+      '<div class="suite-price"><strong>$99</strong><span>/ mo · unlimited users</span>'+
+      '<span class="suite-status" style="background:#0F766E1f;color:#0F766E">'+gpStatus+(gp ? " · "+gpDrawsLive+" DRAWS LIVE" : "")+'</span></div></div>';
     if (!gp){
-      h += '<p class="text-sm text-slate-600 mt-4">Generate AIA-style pay apps from a schedule of values, '+
-        'with retainage math done for you — and see exactly which sub is holding up your draw.</p>'+
-        '<div class="flex gap-2 mt-5"><button id="suite-gp-open" class="btn-primary px-4 py-2 text-sm">See Get-Paid</button></div>'+
-        '<p class="text-xs text-slate-400 mt-3">Or get both together: <strong>GC Suite $179/mo</strong> (save $49/mo).</p>';
-    } else if (!gp.projects.length){
-      h += '<p class="text-sm text-slate-500 mt-4">No projects yet — add your first project to start a draw.</p>'+
-        '<div class="flex gap-2 mt-5"><button id="suite-gp-open" class="btn-primary px-4 py-2 text-sm">Open Get-Paid</button></div>';
+      h += '<div class="suite-stats"><div><span>Billed</span><strong>—</strong></div>'+
+        '<div><span>Collected</span><strong>—</strong></div>'+
+        '<div><span>Retainage held</span><strong>—</strong></div></div>'+
+        '<p class="suite-empty">Generate AIA-style pay apps from a schedule of values with retainage math done for you — '+
+        'and see exactly which sub is holding up your draw.</p>'+
+        '<div class="suite-panel-foot"><span>GC Suite: both for $179/mo</span>'+
+        '<button id="suite-gp-open" class="suite-btn navy sm">See Get-Paid →</button></div></section>';
     } else {
-      h += '<div class="grid grid-cols-3 gap-3 mt-4 text-center">'+
-        '<div><div class="text-xs font-bold uppercase text-slate-400">Billed</div><div class="font-bold" style="color:var(--navy)">'+gpMoney(gp.totals.billed)+'</div></div>'+
-        '<div><div class="text-xs font-bold uppercase text-slate-400">Collected</div><div class="font-bold" style="color:#15803d">'+gpMoney(gp.totals.collected)+'</div></div>'+
-        '<div><div class="text-xs font-bold uppercase text-slate-400">Outstanding</div><div class="font-bold" style="color:var(--orange)">'+gpMoney(gp.totals.outstanding)+'</div></div></div>';
-      h += '<div class="mt-4 space-y-2">' + gp.projects.slice(0,5).map(function(p){
-        var right = p.outstanding > 0 ? '<span style="color:var(--orange)" class="font-semibold">'+gpMoney(p.outstanding)+' out</span>'
-          : (p.draws ? '<span style="color:#15803d" class="font-semibold">Paid up</span>' : '<span class="text-slate-400">No draws</span>');
-        return '<button data-sgp="'+p.id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
-          '<span><span class="font-semibold text-sm">'+escapeHtml(p.name)+'</span>'+
-          '<span class="block text-xs text-slate-400">'+escapeHtml(p.client_name||"")+(p.client_name?' · ':'')+p.draws+' draw'+(p.draws===1?'':'s')+'</span></span>'+
-          '<span class="text-xs whitespace-nowrap ml-3">'+right+' →</span></button>';
-      }).join("") + '</div>';
-      h += '<div class="flex gap-2 mt-5"><button id="suite-gp-open" class="px-4 py-2 text-sm font-semibold border border-slate-300 rounded-lg">Open Get-Paid</button></div>';
-    }
-    h += '</div></div>';
-
-    /* Needs attention — unsigned waivers */
-    if (gp && gp.waivers_unsigned.length){
-      h += '<div class="bg-white rounded-xl shadow-sm border border-slate-200 border-l-4 p-6 mt-5" style="border-left-color:var(--orange)">'+
-        '<h3 class="text-lg font-bold" style="color:var(--navy)">Needs attention</h3>'+
-        '<p class="text-sm text-slate-500 mt-1">'+gp.waivers_unsigned.length+' unsigned waiver'+(gp.waivers_unsigned.length===1?'':'s')+
-        ' holding up '+gp.draws_blocked+' draw'+(gp.draws_blocked===1?'':'s')+'.</p>'+
-        '<div class="mt-4 space-y-2">' + gp.waivers_unsigned.slice(0,6).map(function(w){
-          return '<button data-sgp="'+w.project_id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
-            '<span class="text-sm">'+gpPill(w.status)+' <strong>'+escapeHtml(w.sub_name)+'</strong>'+
-            '<span class="text-slate-500"> — '+escapeHtml(gpKindLabel(w.waiver_kind))+' '+escapeHtml(gpScopeLabel(w.waiver_scope))+
-            ' · '+escapeHtml(w.project_name)+' · Draw #'+w.draw_number+'</span></span>'+
-            '<span class="text-sm font-semibold whitespace-nowrap ml-3">'+gpMoney(w.amount)+'</span></button>';
-        }).join("") + '</div></div>';
-    }
-
-    /* Pipeline strip */
-    if (gp){
-      var st = gp.stage;
-      function stageBox(label, n, sub){
-        return '<div class="flex-1 bg-white rounded-xl shadow-sm border border-slate-200 p-4 text-center">'+
-          '<div class="text-2xl font-bold" style="color:var(--navy)">'+n+'</div>'+
-          '<div class="text-xs font-bold uppercase tracking-wide text-slate-400 mt-1">'+label+'</div>'+
-          '<div class="text-xs text-slate-400">'+sub+'</div></div>';
+      h += '<div class="suite-stats">'+
+        '<div><span>Billed</span><strong>'+gpMoney(gp.totals.billed)+'</strong></div>'+
+        '<div><span>Collected</span><strong>'+gpMoney(gp.totals.collected)+'</strong></div>'+
+        '<div><span>Retainage held</span><strong>'+gpMoney(gp.totals.retained)+'</strong></div></div>';
+      if (gp.projects.length){
+        h += '<div class="suite-rows">' + gp.projects.slice(0,3).map(function(p){
+          var pct = p.billed > 0 ? Math.round(100 * p.collected / p.billed) : 0;
+          var badge = p.outstanding > 0 ? suiteStagePill("OUTSTANDING", "#E56A2B")
+            : (p.draws ? suiteStagePill("PAID UP", "#0F766E") : suiteStagePill("NO DRAWS", "#68707A"));
+          return '<button class="suite-row" data-sgp="'+p.id+'">'+
+            '<span class="suite-row-main"><strong>'+escapeHtml(p.name)+'</strong>'+
+            '<span>'+escapeHtml(p.client_name||"")+(p.client_name?" · ":"")+p.draws+' draw'+(p.draws===1?"":"s")+
+            (p.outstanding > 0 ? ' · '+gpMoney(p.outstanding)+' out' : '')+'</span></span>'+
+            '<span class="suite-row-side">'+suiteBar(pct, "#0F766E")+badge+'</span></button>';
+        }).join("") + '</div>';
+      } else {
+        h += '<p class="suite-empty">No projects yet — add your first project to start a draw.</p>';
       }
-      h += '<div class="flex items-stretch gap-2 md:gap-3 mt-5">'+
-        stageBox("Leveled", tab.count, "bid packages")+
-        '<div class="self-center text-slate-300 font-bold">→</div>'+
-        stageBox("In billing", st.in_billing, "projects w/ draws")+
-        '<div class="self-center text-slate-300 font-bold">→</div>'+
-        stageBox("Submitted", st.submitted, "draws awaiting pay")+
-        '<div class="self-center text-slate-300 font-bold">→</div>'+
-        stageBox("Paid", st.paid, "draws collected")+
-        '</div>';
+      if (gp.waivers_recent.length){
+        h += '<div class="suite-mini"><div class="suite-mini-title">Waiver tracker</div>'+
+          '<table class="suite-table"><tbody>' + gp.waivers_recent.slice(0,4).map(function(w){
+            return '<tr><td><strong>'+escapeHtml(w.sub_name)+'</strong> <span class="suite-mini-dim">'+
+              escapeHtml(gpKindLabel(w.waiver_kind))+' '+escapeHtml(gpScopeLabel(w.waiver_scope))+'</span></td>'+
+              '<td class="num">'+gpMoney(w.amount)+'</td><td class="pillcell">'+gpPill(w.status)+'</td></tr>';
+          }).join("") + '</tbody></table></div>';
+      }
+      h += '<div class="suite-panel-foot"><span>'+gp.projects.length+' project'+(gp.projects.length===1?"":"s")+' · '+gpDrawsLive+' draws</span>'+
+        '<button id="suite-gp-open" class="suite-btn navy sm">Open Get-Paid →</button></div></section>';
     }
-    return h;
+    h += '</div>'; /* /panels */
+
+    /* ---------- lower section ---------- */
+    h += '<div class="suite-lower"><div class="suite-card suite-pipeline">'+
+      '<div class="suite-lower-head"><h3>All projects — bid to paid, in one pipeline</h3>'+
+      '<input id="suite-search" type="text" placeholder="Search projects…" aria-label="Search projects"></div>'+
+      '<div id="suite-pipe-rows">';
+    var pipe = [];
+    tab.recent.forEach(function(t){
+      pipe.push({kind:"tab", id:t.id, name:t.project_name||"Bid package", sub:t.bidders+" bidders",
+        stage:"Leveled", color:"#0E7490", pct:25, value:t.low_total});
+    });
+    if (gp) gp.projects.forEach(function(p){
+      var stage = "In billing", pct = 50;
+      if (p.outstanding > 0){ stage = "Draw submitted"; pct = 75; }
+      else if (p.billed > 0){ stage = "Paid"; pct = 100; }
+      else if (!p.draws){ stage = "Billing setup"; pct = 40; }
+      pipe.push({kind:"gp", id:p.id, name:p.name, sub:p.client_name||"",
+        stage:stage, color:"#0F766E", pct:pct, value:p.billed > 0 ? p.billed : null});
+    });
+    if (pipe.length){
+      h += pipe.slice(0,8).map(function(r){
+        return '<div class="suite-pipe-row" data-kind="'+r.kind+'" data-text="'+escapeHtml((r.name+" "+r.sub).toLowerCase())+'">'+
+          '<button class="suite-pipe-name" data-'+(r.kind==="tab" ? 'stab="'+r.id : 'sgp="'+r.id)+'">'+
+          '<strong>'+escapeHtml(r.name)+'</strong><span>'+escapeHtml(r.sub)+'</span></button>'+
+          '<span class="suite-pipe-stage">'+suiteStagePill(r.stage.toUpperCase(), r.color)+'</span>'+
+          '<span class="suite-pipe-bar">'+suiteBar(r.pct, r.color)+'</span>'+
+          '<span class="suite-pipe-val num">'+(r.value!=null ? gpMoney(r.value) : "—")+'</span></div>';
+      }).join("");
+    } else {
+      h += '<p class="suite-empty">Nothing in the pipeline yet — start a tabulation or a Get-Paid project and it shows up here.</p>';
+    }
+    h += '</div></div>'; /* /pipeline */
+
+    h += '<div class="suite-side">';
+    /* Needs attention */
+    h += '<div class="suite-card suite-attn"><div class="suite-lower-head"><h3>Needs attention</h3>'+
+      (gp && un ? '<span class="suite-urgent">'+un+' urgent</span>' : '')+'</div>';
+    if (gp && un){
+      h += '<div class="suite-attn-rows">' + gp.waivers_unsigned.slice(0,4).map(function(w){
+        return '<button class="suite-attn-row" data-sgp="'+w.project_id+'">'+
+          '<span><strong>'+escapeHtml(w.sub_name)+'</strong><span class="suite-mini-dim"> — '+
+          escapeHtml(gpKindLabel(w.waiver_kind))+' '+escapeHtml(gpScopeLabel(w.waiver_scope))+' waiver · '+
+          escapeHtml(w.project_name)+' · Draw #'+w.draw_number+'</span></span>'+
+          '<span class="num">'+gpMoney(w.amount)+'</span></button>';
+      }).join("") + '</div>'+
+      '<p class="suite-attn-note">'+gp.draws_blocked+' draw'+(gp.draws_blocked===1?"":"s")+' waiting on signatures.</p>';
+    } else if (gp){
+      h += '<p class="suite-empty">All clear — no unsigned waivers, nothing holding up a draw.</p>';
+    } else {
+      h += '<p class="suite-empty">Turn on Get-Paid and this is where unsigned waivers and blocked draws show up.</p>';
+    }
+    h += '</div>';
+
+    /* Money picture */
+    h += '<div class="suite-card suite-money"><div class="suite-lower-head"><h3>Money picture</h3></div>';
+    if (gp && gp.totals.billed > 0){
+      var billed = gp.totals.billed, coll = gp.totals.collected, out = gp.totals.outstanding, ret = gp.totals.retained;
+      var tot = Math.max(1, coll + out + ret);
+      var c1 = 2 * Math.PI * 34;
+      var f1 = coll / tot, f2 = out / tot;
+      var pctColl = Math.round(100 * coll / Math.max(1, billed));
+      h += '<div class="suite-money-flex"><svg class="suite-donut" viewBox="0 0 84 84" width="96" height="96">'+
+        '<circle cx="42" cy="42" r="34" fill="none" stroke="#E9E4D8" stroke-width="11"/>'+
+        '<circle cx="42" cy="42" r="34" fill="none" stroke="#E56A2B" stroke-width="11" stroke-dasharray="'+(f2*c1).toFixed(1)+' '+c1.toFixed(1)+'" transform="rotate('+(270 + f1*360)+' 42 42)"/>'+
+        '<circle cx="42" cy="42" r="34" fill="none" stroke="#68707A" stroke-width="11" stroke-dasharray="'+((ret/tot)*c1).toFixed(1)+' '+c1.toFixed(1)+'" transform="rotate('+(270 + (f1+f2)*360)+' 42 42)"/>'+
+        '<circle cx="42" cy="42" r="34" fill="none" stroke="#0F766E" stroke-width="11" stroke-dasharray="'+(f1*c1).toFixed(1)+' '+c1.toFixed(1)+'" transform="rotate(-90 42 42)"/>'+
+        '<text x="42" y="40" text-anchor="middle" class="suite-donut-pct">'+pctColl+'%</text>'+
+        '<text x="42" y="53" text-anchor="middle" class="suite-donut-sub">collected</text></svg>'+
+        '<div class="suite-legend">'+
+        '<div><i style="background:#0F766E"></i>Collected<strong class="num">'+gpMoney(coll)+'</strong></div>'+
+        '<div><i style="background:#E56A2B"></i>Outstanding<strong class="num">'+gpMoney(out)+'</strong></div>'+
+        '<div><i style="background:#68707A"></i>Retainage held<strong class="num">'+gpMoney(ret)+'</strong></div></div></div>';
+      if (gp.recent_draws.length){
+        h += '<div class="suite-draws">' + gp.recent_draws.slice(0,4).map(function(dr){
+          var dstr = dr.created_at ? gpDate(dr.created_at) : "";
+          return '<div class="suite-draw-row"><span><strong>'+escapeHtml(dr.project_name)+'</strong>'+
+            '<span class="suite-mini-dim"> · Draw #'+dr.draw_number+(dstr ? ' · '+dstr : '')+'</span></span>'+
+            '<span class="num">'+gpMoney(dr.due)+'</span>'+gpPill(dr.status)+'</div>';
+        }).join("") + '</div>';
+      }
+    } else {
+      h += '<p class="suite-empty">'+(gp ? "No draws billed yet — your billed / collected / outstanding picture lands here." :
+        "Get-Paid is off — billed, collected and outstanding draws will chart here once it's on.")+'</p>';
+    }
+    h += '</div></div>'; /* /side */
+    h += '</div>'; /* /lower */
+    return h + '</div>';
   }
 
-  function suiteWire(d){
+  function applySeg(){
+    document.querySelectorAll(".suite-seg button").forEach(function(b){
+      b.classList.toggle("on", b.dataset.seg === suiteSeg);
+    });
+    var tp = $("suite-panel-tab"), pp = $("suite-panel-gp");
+    if (tp) tp.classList.toggle("suite-dim", suiteSeg === "gp");
+    if (pp) pp.classList.toggle("suite-dim", suiteSeg === "tab");
+    document.querySelectorAll(".suite-pipe-row").forEach(function(r){
+      r.style.display = (suiteSeg === "suite" || r.dataset.kind === suiteSeg) ? "" : "none";
+    });
+  }
+
+  function suiteWire(){
     var el = $("suite-app");
     el.querySelectorAll("[data-stab]").forEach(function(b){
       b.addEventListener("click", function(){ loadTabulation(Number(b.dataset.stab)); });
@@ -1815,12 +2077,29 @@
         switchDashTab("getpaid");
       });
     });
+    el.querySelectorAll(".suite-seg button").forEach(function(b){
+      b.addEventListener("click", function(){ suiteSeg = b.dataset.seg; applySeg(); });
+    });
     var nt = $("suite-new-tab");
     if (nt) nt.addEventListener("click", function(){ $("new-tab-btn").click(); });
-    var at = $("suite-all-tabs");
-    if (at) at.addEventListener("click", function(){ switchDashTab("tabs"); });
+    var ot = $("suite-open-tabs");
+    if (ot) ot.addEventListener("click", function(){ switchDashTab("tabs"); });
     var go = $("suite-gp-open");
     if (go) go.addEventListener("click", function(){ switchDashTab("getpaid"); });
+    var np = $("suite-new-payapp");
+    if (np) np.addEventListener("click", function(){ switchDashTab("getpaid"); });
+    var sov = $("suite-sov");
+    if (sov) sov.addEventListener("click", function(){
+      window.open("https://clearscopebid.com/tools/schedule-of-values-builder", "_blank");
+    });
+    var srch = $("suite-search");
+    if (srch) srch.addEventListener("input", function(){
+      var q = srch.value.trim().toLowerCase();
+      document.querySelectorAll(".suite-pipe-row").forEach(function(r){
+        var segOk = suiteSeg === "suite" || r.dataset.kind === suiteSeg;
+        r.style.display = (segOk && (!q || (r.dataset.text || "").indexOf(q) >= 0)) ? "" : "none";
+      });
+    });
   }
 
   /* ================= GET-PAID SUITE (Coe 2026-10-11) ================= */
