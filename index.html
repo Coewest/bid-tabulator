@@ -262,6 +262,7 @@
     </p>
     <div class="mt-8 flex flex-wrap items-center gap-4">
       <a href="#app" class="btn-primary px-7 py-3.5 text-lg inline-block">Upload bids — try it free</a>
+      <button id="sample-btn-hero" class="px-7 py-3.5 text-lg font-bold rounded-lg border-2 text-white hover:bg-white/10" style="border-color:rgba(255,255,255,.35)">Run a sample bid package</button>
       <button id="gp-demo-btn" class="px-7 py-3.5 text-lg font-bold rounded-lg border-2 text-white hover:bg-white/10" style="border-color:rgba(255,255,255,.35)">Try the Get-Paid demo</button>
       <span class="text-sm" style="color:#9fb3c1">First bid package free. $129/mo after that. No credit card.</span>
     </div>
@@ -269,6 +270,14 @@
 </header>
 
 <main id="app" class="max-w-6xl mx-auto px-5 py-10">
+
+  <!-- ============ SAMPLE BANNER (visible only during the sample run) ============ -->
+  <div id="sample-banner" class="hidden mb-6 rounded-xl border-2 p-4" style="border-color:var(--orange);background:#fff4ec">
+    <p class="text-sm" style="color:#7c2d12"><strong>📋 SAMPLE PACKAGE — fictional data.</strong>
+      This is the real parser&rsquo;s output on four made-up electrical bids (Harvest Pointe Retail Center) —
+      including a planted scope gap and an add alternate. Nothing was uploaded, no account was created,
+      and your free tabulation is untouched.</p>
+  </div>
 
   <!-- ============ UPLOAD ============ -->
   <section id="upload-section" class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
@@ -289,6 +298,12 @@
     <div class="mt-6 flex items-center gap-4">
       <button id="level-btn" class="btn-primary px-8 py-3 text-lg" disabled>Level my bids</button>
       <span id="upload-hint" class="text-sm text-slate-400">Add at least one file to continue</span>
+    </div>
+
+    <div class="mt-6 flex flex-wrap items-center gap-4 border-t border-slate-100 pt-5">
+      <button id="sample-btn" class="px-5 py-2.5 rounded-lg font-semibold border-2" style="border-color:var(--orange);color:var(--orange-dark)">▶ Run a sample bid package</button>
+      <span class="text-sm text-slate-500">No bids of your own handy? Watch the real parser level a fictional 4-bidder
+        electrical package — no upload, no account, and it doesn&rsquo;t use your free run.</span>
     </div>
 
     <div id="upload-error" class="hidden mt-4 p-4 rounded-lg bg-red-50 text-red-800 text-sm"></div>
@@ -356,6 +371,12 @@
       <span><span class="inline-block w-3 h-3 rounded-sm align-middle mr-1" style="background:#e5f4eb"></span> Leveled low bidder</span>
       <span>— = not priced &nbsp;·&nbsp; <em>Incl.</em> = included at no charge</span>
       <span>Click any cell to add a leveling adjustment.</span>
+    </div>
+
+    <div id="sample-cta" class="hidden mt-6 bg-white rounded-xl shadow-sm border-2 p-6 text-center" style="border-color:var(--orange)">
+      <p class="font-bold text-lg" style="color:var(--navy)">That was a fictional sample — your bids level the same way.</p>
+      <p class="text-slate-500 text-sm mt-1">Upload your own sub bids and get this comparison on a real package. First package free, no credit card.</p>
+      <button id="sample-run-own" class="btn-primary px-7 py-3 text-lg mt-4">Run your own package free</button>
     </div>
   </section>
 
@@ -767,6 +788,7 @@
 
   levelBtn.addEventListener("click", function(){
     if (!files.length) return;
+    setSampleMode(false);
     show("processing-section"); hide("upload-section");
     uploadError.classList.add("hidden");
     var fd=new FormData();
@@ -806,6 +828,51 @@
         uploadError.textContent="Couldn't read those files: "+err.message+". Try a different export (PDF or Excel) of the bid tab.";
         uploadError.classList.remove("hidden");
       });
+  });
+
+  /* ---------- sample package demo (no upload, no free-run use) ---------- */
+  function setSampleMode(on){
+    state.sampleMode = !!on;
+    $("sample-banner").classList.toggle("hidden", !on);
+    $("sample-cta").classList.toggle("hidden", !on);
+  }
+  function runSample(){
+    setSampleMode(true);
+    show("processing-section"); hide("upload-section");
+    hide("confirm-section"); hide("results-section");
+    uploadError.classList.add("hidden");
+    fetch("/api/sample",{method:"POST"})
+      .then(function(r){ return r.json().then(function(j){ return {ok:r.ok, status:r.status, body:j}; }); })
+      .then(function(res){
+        if (!res.ok || res.body.error) throw new Error(res.body.error || "Sample failed");
+        state.data=res.body;
+        state.names=res.body.bidders.map(function(b){return b.name;});
+        state.adjustments={}; state.choices={}; state.frequencies={};
+        state.userStatus={}; state.provisional=false; state.deductsConfirmed=false;
+        state.awardBasis="base";
+        state.taxBasis="included";
+        state.taxRate = res.body.tax_rate_detected || 0;
+        afterUploadSuccess(res.body);
+        renderConfirm();
+        show("confirm-section"); hide("processing-section");
+      })
+      .catch(function(err){
+        setSampleMode(false);
+        hide("processing-section"); show("upload-section");
+        uploadError.textContent="Couldn't load the sample package: "+err.message+". You can still upload your own bids above.";
+        uploadError.classList.remove("hidden");
+      });
+  }
+  $("sample-btn").addEventListener("click", runSample);
+  $("sample-btn-hero").addEventListener("click", function(){
+    document.getElementById("app").scrollIntoView({behavior:"smooth"});
+    runSample();
+  });
+  $("sample-run-own").addEventListener("click", function(){
+    setSampleMode(false);
+    hide("results-section"); hide("confirm-section");
+    show("upload-section");
+    document.getElementById("app").scrollIntoView({behavior:"smooth"});
   });
 
   function show(id){ $(id).classList.remove("hidden"); }
@@ -955,7 +1022,7 @@
     renderTable(); show("results-section"); hide("confirm-section");
     document.getElementById("results-section").scrollIntoView({behavior:"smooth"});
   });
-  $("back-to-upload").addEventListener("click", function(){ show("upload-section"); hide("confirm-section"); });
+  $("back-to-upload").addEventListener("click", function(){ setSampleMode(false); show("upload-section"); hide("confirm-section"); });
   $("dismiss-caution").addEventListener("click", function(e){
     e.target.closest("div").style.display="none";
   });
@@ -1434,6 +1501,7 @@
            taxBasis:"included",taxRate:0,awardBasis:"base",deductsConfirmed:false,provisional:false};
     pendingTabId=null;
     hide("save-prompt"); hide("results-section"); hide("confirm-section");
+    hide("sample-banner"); hide("sample-cta");
     if (authUser){ renderLoggedInView(); } else { show("upload-section"); }
     window.scrollTo({top:0,behavior:"smooth"});
   });
@@ -1831,6 +1899,7 @@
       var tb=(d.tax_basis_detected||[]).filter(Boolean);
       state.taxBasis = tb.length && tb.every(function(x){return x==="tax_excluded";}) ? "excluded" : "included";
       state.taxRate = d.tax_rate_detected || 0;
+      setSampleMode(false);
       hide("dashboard-section"); hide("upload-section");
       renderTable();
       show("results-section");
