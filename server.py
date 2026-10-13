@@ -1658,12 +1658,62 @@ def health():
     return jsonify(ok=True)
 
 
+# ---------------------------------------------------------------- funnel
+#
+# Anonymous aggregate funnel counters (2026-10-13, Coe "build #2"): one row
+# per event in funnel_events — event name + timestamp ONLY. No IP, no user
+# agent, no email, no identifier of any kind. Server-side steps are recorded
+# by the handlers themselves; page-interaction steps arrive via the beacon
+# branch of /api/track below, restricted to an allowlist.
+
+FUNNEL_EVENTS = (
+    "sample_run",
+    "upload_started",
+    "upload_succeeded",
+    "upload_gated",
+    "upload_failed",
+    "license_section_view",
+    "license_link_click",
+    "license_mailto_click",
+)
+FUNNEL_BEACON_EVENTS = frozenset((
+    "license_section_view",
+    "license_link_click",
+    "license_mailto_click",
+))
+
+
+def _funnel_event(event):
+    """Record one anonymous funnel event. Never raises into the request path."""
+    try:
+        import time as _time
+        db = get_db()
+        try:
+            db.execute(
+                "INSERT INTO funnel_events (event, created_at) VALUES (?, ?)",
+                (event, int(_time.time())))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+
 @app.route("/api/track", methods=["POST"])
 def track_page_view():
     """Record a page view. No auth required. Bots are flagged, not blocked."""
     from auth_billing import get_db
     import hashlib, time
     body = request.get_json(force=True, silent=True) or {}
+    # Funnel beacon branch: a body carrying "event" counts one anonymous
+    # funnel step (allowlist only, nothing else stored) instead of a page
+    # view. Unknown events are rejected.
+    if "event" in body:
+        ev = body.get("event")
+        if ev not in FUNNEL_BEACON_EVENTS:
+            return jsonify(error="unknown event"), 400
+        _funnel_event(ev)
+        return "", 204
     path = (body.get("path") or "/")[:200]
     referrer = (body.get("referrer") or "")[:500]
     ua = request.headers.get("User-Agent", "")[:500]
@@ -1842,6 +1892,29 @@ def admin_tracking():
         stats["top_pages"] = top_pages
         stats["top_referrers"] = top_refs
         stats["daily"] = daily
+        # Funnel counters (anonymous aggregates, 2026-10-13): "today" is the
+        # Chicago calendar day like the rest of this payload; 7d/30d are
+        # rolling windows, matching the tabulations convention above. A
+        # funnel hiccup must never take the whole stats payload down.
+        try:
+            def funnel_counts(since_ts):
+                counts = {e: 0 for e in FUNNEL_EVENTS}
+                for r in db.execute(
+                        "SELECT event, COUNT(*) AS c FROM funnel_events"
+                        " WHERE created_at >= ? GROUP BY event",
+                        (since_ts,)).fetchall():
+                    if r["event"] in counts:
+                        counts[r["event"]] = r["c"]
+                return counts
+            stats["funnel"] = {
+                "today": funnel_counts(today_start),
+                "last_7d": funnel_counts(now - 7 * 86400),
+                "last_30d": funnel_counts(now - 30 * 86400),
+            }
+        except Exception:
+            _zero = {e: 0 for e in FUNNEL_EVENTS}
+            stats["funnel"] = {"today": dict(_zero), "last_7d": dict(_zero),
+                                "last_30d": dict(_zero)}
         stats["emails"] = _tabulator_email_counts()
         return jsonify(stats)
     finally:
@@ -2076,9 +2149,11 @@ def _parse_saved_files(saved):
 @app.route("/api/upload", methods=["POST"])
 def upload():
     """Gated wrapper: enforces free-tier + subscription before parsing."""
+    _funnel_event("upload_started")
     user = auth_billing.current_user()
     allowed, reason = auth_billing.can_upload(user)
     if not allowed:
+        _funnel_event("upload_gated")
         if reason == "needs_account":
             return jsonify(error="free_limit",
                            message="Your free tabulation is used. Create a free account to save it — "
@@ -2088,6 +2163,7 @@ def upload():
                                "for unlimited bid tabulations."), 402
     resp = _do_upload()
     # On success, persist the tabulation and mark free use.
+    _persisted = False
     try:
         status = resp.status_code if hasattr(resp, "status_code") else 200
         if status == 200:
@@ -2096,6 +2172,7 @@ def upload():
                 project = data.get("project_name") or "Bid package"
                 uid = user["id"] if user else None
                 tab_id = auth_billing.save_tabulation(uid, project, data)
+                _persisted = True
                 # attach tabulation id to response
                 data["tabulation_id"] = tab_id
                 data["saved"] = bool(uid)
@@ -2117,6 +2194,12 @@ def upload():
                     session["free_used"] = True
     except Exception:
         pass  # never break parsing because of persistence
+    # Funnel outcome: succeeded = a tabulation was actually persisted from
+    # the 200 parse; anything else that got past the gate counts as failed.
+    if _persisted:
+        _funnel_event("upload_succeeded")
+    else:
+        _funnel_event("upload_failed")
     return resp
 
 
@@ -2166,6 +2249,7 @@ def sample_package():
             data["saved"] = False
             data.pop("tabulation_id", None)
             data.pop("claim_token", None)
+            _funnel_event("sample_run")
             return jsonify(data)
     return resp
 
