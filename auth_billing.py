@@ -981,6 +981,30 @@ document.getElementById("go").onclick = function(){
             pass
         return jsonify(received=True)
 
+    # TEMP (2026-10-12 reconciliation investigation): read-only billing-state
+    # probe, gated by the RECONCILE_TOKEN env var. Removed right after use.
+    @app.get("/api/internal/reconcile-billing")
+    def reconcile_billing_probe():
+        tok = os.environ.get("RECONCILE_TOKEN") or ""
+        given = request.headers.get("X-Reconcile-Token") or ""
+        if not tok or not hmac.compare_digest(given, tok):
+            return jsonify(error="not found"), 404
+        db = get_db()
+        try:
+            subs = [dict(r) for r in db.execute(
+                "SELECT user_id, stripe_customer_id, stripe_subscription_id,"
+                " status, current_period_end, billing_interval, updated_at"
+                " FROM subscriptions").fetchall()]
+            svcs = [dict(r) for r in db.execute(
+                "SELECT company_id, service_key, status, stripe_subscription_id,"
+                " stripe_price_id, current_period_end, created_at"
+                " FROM company_services").fetchall()]
+            users = [dict(r) for r in db.execute(
+                "SELECT id, email, created_at FROM users ORDER BY id").fetchall()]
+            return jsonify(subscriptions=subs, company_services=svcs, users=users)
+        finally:
+            db.close()
+
     @app.get("/api/billing/config")
     def billing_config():
         return jsonify(publishable_key=STRIPE_PUBLISHABLE_KEY or None,
