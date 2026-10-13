@@ -816,6 +816,39 @@ document.getElementById("go").onclick = function(){
         finally:
             db.close()
 
+
+    @app.get("/api/internal/compstats-probe")
+    def compstats_probe():
+        _tok = os.environ.get("COMPSTATS_PROBE_TOKEN") or ""
+        if not _tok or (request.args.get("t") or "") != _tok:
+            return jsonify(error="not found"), 404
+        db = get_db()
+        try:
+            row1 = db.execute(
+                "SELECT user_id, status, billing_interval, "
+                "(stripe_subscription_id IS NOT NULL AND stripe_subscription_id != '') AS has_sub "
+                "FROM subscriptions WHERE user_id=1").fetchone()
+            real_sub = "stripe_subscription_id IS NOT NULL AND stripe_subscription_id != ''"
+            paying = db.execute(
+                f"SELECT COUNT(*) c FROM subscriptions WHERE status='active' AND {real_sub}"
+            ).fetchone()["c"]
+            annual = db.execute(
+                f"SELECT COUNT(*) c FROM subscriptions WHERE status='active' AND {real_sub} AND billing_interval='year'"
+            ).fetchone()["c"]
+            comped = db.execute(
+                "SELECT COUNT(*) c FROM subscriptions WHERE status='active' "
+                "AND (stripe_subscription_id IS NULL OR stripe_subscription_id='')"
+            ).fetchone()["c"]
+            monthly = paying - annual
+            return jsonify(
+                probe_stats={"paying_customers": paying, "comped": comped,
+                             "mrr": monthly * 129 + annual * 1290 // 12},
+                sub_status_user1=subscription_status(1),
+                row_user1=(dict(row1) if row1 else None),
+            )
+        finally:
+            db.close()
+
     @app.get("/api/tabulations")
     @login_required
     def tab_list():
