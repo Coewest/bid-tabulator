@@ -116,6 +116,11 @@ def init_db():
         updated_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_tab_user ON tabulations(user_id);
+    CREATE INDEX IF NOT EXISTS idx_tab_created ON tabulations(created_at);
+    CREATE TABLE IF NOT EXISTS maintenance_state (
+        key TEXT PRIMARY KEY,
+        updated_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS page_views (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         path TEXT NOT NULL,
@@ -126,6 +131,16 @@ def init_db():
     );
     CREATE INDEX IF NOT EXISTS idx_pv_created ON page_views(created_at);
     CREATE INDEX IF NOT EXISTS idx_pv_visitor ON page_views(visitor_hash);
+    -- Funnel events (2026-10-13): anonymous aggregate counters ONLY —
+    -- an event name and a timestamp. Never an IP, user agent, email,
+    -- or any other identifier.
+    CREATE TABLE IF NOT EXISTS funnel_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_funnel_created ON funnel_events(created_at);
+    CREATE INDEX IF NOT EXISTS idx_funnel_event ON funnel_events(event);
     -- Get-Paid suite tables (2026-10-11). company_id = users.id: this app has
     -- no companies table; one account = one company.
     CREATE TABLE IF NOT EXISTS getpaid_projects (
@@ -501,6 +516,232 @@ def get_tabulation(user_id: int, tab_id: int):
         db.close()
 
 
+TABULATION_RETENTION_DAYS = 30
+TABULATION_PURGE_CAP = 50
+TABULATION_PURGE_INTERVAL_SECONDS = 60 * 60
+_TABULATION_PURGE_KEY = "unclaimed_tabulation_purge"
+_last_tabulation_purge_process_check = 0
+
+
+def _tabulation_file_root():
+    """Dedicated root for any server-side tabulation files.
+
+    Uploads are currently parsed from temporary files and unlinked by the
+    upload handler; the parsed tabulation JSON is the persistent record.
+    This root is deliberately narrow so deletion can never follow a bidder
+    filename or arbitrary path out of stored JSON and remove unrelated app
+    files. Only explicit stored-file paths under this root are removed.
+    """
+    configured = os.environ.get("TABULATOR_FILE_DIR", "").strip()
+    if configured:
+        return os.path.realpath(configured)
+    return os.path.join(os.path.dirname(os.path.abspath(DB_PATH)),
+                        "tabulation_files")
+
+
+def _stored_tabulation_file_paths(data):
+    if not isinstance(data, dict):
+        return []
+    raw = []
+    for key in ("stored_file_paths", "stored_files", "file_paths"):
+        value = data.get(key)
+        if isinstance(value, str):
+            raw.append(value)
+        elif isinstance(value, (list, tuple)):
+            raw.extend(v for v in value if isinstance(v, str))
+    for bidder in data.get("bidders") or []:
+        if isinstance(bidder, dict):
+            value = bidder.get("stored_file_path")
+            if isinstance(value, str):
+                raw.append(value)
+
+    root = _tabulation_file_root()
+    paths = []
+    for path in raw:
+        resolved = os.path.realpath(path)
+        try:
+            inside_root = os.path.commonpath([root, resolved]) == root
+        except ValueError:
+            inside_root = False
+        if inside_root and resolved != root:
+            paths.append(resolved)
+    return sorted(set(paths))
+
+
+def _remove_stored_tabulation_files(data):
+    for path in _stored_tabulation_file_paths(data):
+        if os.path.isdir(path):
+            raise OSError("stored tabulation path is a directory")
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
+
+def _delete_tabulation_row(db, row):
+    """Delete one already-authorized tabulation row and its stored files."""
+    try:
+        data = json.loads(row["data_json"])
+    except Exception:
+        data = {}
+    _remove_stored_tabulation_files(data)
+    cur = db.execute("DELETE FROM tabulations WHERE id=?", (row["id"],))
+    return cur.rowcount == 1
+
+
+def delete_tabulation_for_user(user_id: int, tab_id: int) -> bool:
+    """Hard-delete a tabulation only when it belongs to ``user_id``."""
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT id, data_json FROM tabulations WHERE id=? AND user_id=?",
+            (tab_id, user_id)).fetchone()
+        if not row:
+            return False
+        try:
+            deleted = _delete_tabulation_row(db, row)
+            db.commit()
+            return deleted
+        except Exception as e:
+            db.rollback()
+            print(f"[tabulation-delete] owner delete failed: {type(e).__name__}",
+                  flush=True)
+            return False
+    finally:
+        db.close()
+
+
+def delete_unclaimed_tabulation(tab_id: int, claim_token: str) -> bool:
+    """Hard-delete an unclaimed tabulation when the caller proves possession
+    of the random claim token issued to the browser that created it."""
+    if not claim_token:
+        return False
+    db = get_db()
+    try:
+        row = db.execute(
+            "SELECT id, data_json, claim_token FROM tabulations"
+            " WHERE id=? AND user_id IS NULL", (tab_id,)).fetchone()
+        if not row or not row["claim_token"]:
+            return False
+        if not hmac.compare_digest(row["claim_token"], claim_token):
+            return False
+        try:
+            deleted = _delete_tabulation_row(db, row)
+            db.commit()
+            return deleted
+        except Exception as e:
+            db.rollback()
+            print(f"[tabulation-delete] unclaimed delete failed: {type(e).__name__}",
+                  flush=True)
+            return False
+    finally:
+        db.close()
+
+
+def purge_unclaimed_tabulations(retention_days=TABULATION_RETENTION_DAYS,
+                                cap=TABULATION_PURGE_CAP, now=None):
+    """Permanently delete old unclaimed tabulations, with a safety cap.
+
+    Claimed/user-owned rows are never selected. If more than ``cap`` rows
+    are eligible, nothing is deleted; the count is logged for review. Logs
+    contain counts only, never bid contents.
+    """
+    now = int(time.time()) if now is None else int(now)
+    cutoff = now - int(retention_days) * 86400
+    db = get_db()
+    try:
+        eligible = db.execute(
+            "SELECT COUNT(*) c FROM tabulations"
+            " WHERE user_id IS NULL AND created_at<=?",
+            (cutoff,)).fetchone()["c"]
+        result = {"eligible": int(eligible), "deleted": 0,
+                  "skipped": int(eligible) > int(cap), "cutoff": cutoff}
+        if result["skipped"]:
+            print(f"[tabulation-purge] skipped: {eligible} unclaimed "
+                  f"tabulation(s) older than {retention_days} days exceeds "
+                  f"safety cap {cap}", flush=True)
+            return result
+
+        rows = db.execute(
+            "SELECT id, data_json FROM tabulations"
+            " WHERE user_id IS NULL AND created_at<=? ORDER BY id",
+            (cutoff,)).fetchall()
+        failures = 0
+        for row in rows:
+            try:
+                if _delete_tabulation_row(db, row):
+                    result["deleted"] += 1
+                    db.commit()
+                else:
+                    db.rollback()
+            except Exception as e:
+                failures += 1
+                db.rollback()
+                print(f"[tabulation-purge] row cleanup failed: "
+                      f"{type(e).__name__}", flush=True)
+        if result["deleted"] or failures:
+            print(f"[tabulation-purge] deleted {result['deleted']} unclaimed "
+                  f"tabulation(s) older than {retention_days} days; "
+                  f"failures={failures}", flush=True)
+        result["failures"] = failures
+        return result
+    finally:
+        db.close()
+
+
+def maybe_purge_unclaimed_tabulations(force=False):
+    """Run the purge at startup and at most hourly per process thereafter.
+
+    A maintenance_state row coordinates Gunicorn's workers so only one
+    process normally claims each hourly sweep. The purge itself is
+    idempotent and rechecks ownership/age for every row.
+    """
+    global _last_tabulation_purge_process_check
+    now = int(time.time())
+    if (not force and
+            now - _last_tabulation_purge_process_check <
+            TABULATION_PURGE_INTERVAL_SECONDS):
+        return {"skipped": True, "reason": "process_throttled"}
+    _last_tabulation_purge_process_check = now
+
+    if not force:
+        db = get_db()
+        try:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS maintenance_state ("
+                " key TEXT PRIMARY KEY, updated_at INTEGER NOT NULL)")
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT updated_at FROM maintenance_state WHERE key=?",
+                (_TABULATION_PURGE_KEY,)).fetchone()
+            if (row and
+                    now - row["updated_at"] <
+                    TABULATION_PURGE_INTERVAL_SECONDS):
+                db.rollback()
+                return {"skipped": True, "reason": "database_throttled"}
+            db.execute(
+                "INSERT INTO maintenance_state (key, updated_at) VALUES (?,?)"
+                " ON CONFLICT(key) DO UPDATE SET updated_at=excluded.updated_at",
+                (_TABULATION_PURGE_KEY, now))
+            db.commit()
+        except Exception as e:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            print(f"[tabulation-purge] sweep claim failed: {type(e).__name__}",
+                  flush=True)
+            return {"skipped": True, "reason": "claim_failed"}
+        finally:
+            db.close()
+
+    try:
+        return purge_unclaimed_tabulations(now=now)
+    except Exception as e:
+        print(f"[tabulation-purge] sweep failed: {type(e).__name__}", flush=True)
+        return {"skipped": True, "reason": "sweep_failed"}
+
+
 def can_upload(user):
     """Returns (allowed: bool, reason: str)."""
     if user:
@@ -518,6 +759,16 @@ def can_upload(user):
 
 
 def register_routes(app):
+    @app.before_request
+    def _unclaimed_tabulation_purge_hook():
+        # No scheduler exists in this codebase. This throttled hook plus the
+        # startup call below provide the periodic sweep without letting web
+        # requests fail if the maintenance query hits a transient DB lock.
+        maybe_purge_unclaimed_tabulations()
+
+    # Startup sweep (also DB-throttled across Gunicorn workers).
+    maybe_purge_unclaimed_tabulations()
+
     _SET_PASSWORD_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -832,6 +1083,25 @@ document.getElementById("go").onclick = function(){
         if not t:
             return jsonify(error="Not found."), 404
         return jsonify(t)
+
+    @app.delete("/api/tabulations/<int:tab_id>")
+    @login_required
+    def tab_delete(tab_id):
+        if not delete_tabulation_for_user(g.user["id"], tab_id):
+            return jsonify(error="Not found."), 404
+        return jsonify(ok=True, deleted=True)
+
+    @app.post("/api/tabulations/<int:tab_id>/delete-unclaimed")
+    def tab_delete_unclaimed(tab_id):
+        body = request.get_json(force=True, silent=True) or {}
+        token = (body.get("claim_token") or
+                 request.headers.get("X-Claim-Token") or "").strip()
+        if not delete_unclaimed_tabulation(tab_id, token):
+            return jsonify(error="Not found."), 404
+        # The deleting browser no longer has a stored anonymous tabulation;
+        # restore its one free run for this session.
+        session.pop("free_used", None)
+        return jsonify(ok=True, deleted=True)
 
     @app.post("/api/stripe/checkout")
     @login_required
