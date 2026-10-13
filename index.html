@@ -655,7 +655,11 @@
     <p class="text-xs text-blue-800 mt-2">Prefer a password? <a href="#" id="save-prompt-pw" class="underline">Create an account the regular way</a></p>
   </div>
   <div id="save-prompt-done" class="hidden">
-    <p class="text-sm text-blue-900"><strong>Saved &#10003;</strong> Check your inbox — we sent a link to set a password and open your tabulation whenever you need it.</p>
+    <p class="text-sm text-blue-900"><strong>Saved &#10003;</strong> <span id="save-done-text">Check your inbox — we sent a link to set a password and open your tabulation whenever you need it.</span></p>
+    <div id="save-done-actions" class="mt-2 flex flex-wrap items-center gap-2">
+      <a id="save-setpw-btn" href="#" class="btn-primary px-4 py-1.5 text-sm" style="display:inline-block;text-decoration:none">Set your password now</a>
+      <span id="save-done-note" class="text-xs text-blue-800"></span>
+    </div>
   </div>
 </div>
 
@@ -1823,7 +1827,22 @@
     api("/api/save-by-email", {method:"POST", body: JSON.stringify({
       email: email, tabulation_id: pendingTabId, claim_token: pendingClaimToken
     })}).then(function(res){
-      if (res.ok && res.body.ok && res.body.emailed){
+      if (res.ok && res.body.ok && res.body.set_password_path){
+        // The same one-time set-password link that was emailed is offered
+        // right here, so a refused email address can't lock anyone out.
+        $("save-setpw-btn").href = res.body.set_password_path;
+        show("save-done-actions");
+        if (res.body.emailed){
+          $("save-done-text").textContent = "Check your inbox \u2014 we sent a link to set a password and open your tabulation whenever you need it.";
+          $("save-done-note").textContent = "This button is that same one-time link \u2014 no need to wait for the email.";
+        } else {
+          $("save-done-text").textContent = "Your tabulation is saved to your free account. The email didn\u2019t send, but you don\u2019t need it:";
+          $("save-done-note").innerHTML = "Or <a href=\"#\" id=\"save-resend\" class=\"underline\">resend the email</a> instead.";
+          $("save-resend").onclick = function(e){ e.preventDefault(); hide("save-prompt-done"); show("save-prompt-main"); saveByEmail(); };
+        }
+        hide("save-prompt-main"); show("save-prompt-done");
+      } else if (res.ok && res.body.ok && res.body.emailed){
+        hide("save-done-actions");
         hide("save-prompt-main"); show("save-prompt-done");
       } else if (res.ok && res.body.ok){
         btn.disabled = false;
