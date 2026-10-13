@@ -4,6 +4,8 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Bid Tabulator — Level Sub Bids in Minutes</title>
+<link rel="icon" type="image/png" href="/static/logo-tabulator-64.png">
+<link rel="apple-touch-icon" href="/static/logo-tabulator.png">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800&family=IBM+Plex+Mono:wght@500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <meta name="description" content="Upload subcontractor bids. Get a side-by-side leveled comparison in minutes." />
 <script src="https://cdn.tailwindcss.com"></script>
@@ -237,7 +239,7 @@
 <!-- ============ TOP NAV ============ -->
 <nav class="text-white" style="background:var(--navy-deep)">
   <div class="max-w-6xl mx-auto px-5 py-3 flex items-center justify-between">
-    <a href="/" class="font-bold text-lg">Bid Tabulator</a>
+    <a href="/" class="flex items-center gap-2.5 font-bold text-lg"><img src="/static/logo-tabulator.png" alt="ClearScope" class="w-8 h-8 rounded-md" width="32" height="32">Bid Tabulator</a>
     <div id="nav-auth" class="flex items-center gap-3 text-sm">
       <span class="text-slate-400">Loading…</span>
     </div>
@@ -457,14 +459,14 @@
 </main>
 
 <footer class="max-w-6xl mx-auto px-5 py-8 text-sm text-slate-500 flex justify-between items-center">
-  <div>A <a href="https://clearscopebid.com" class="font-bold underline" style="color:var(--navy)">ClearScope</a> product</div>
+  <div class="flex items-center gap-2"><img src="/static/logo-tabulator.png" alt="ClearScope" class="w-6 h-6 rounded" width="24" height="24"><span>A <a href="https://clearscopebid.com" class="font-bold underline" style="color:var(--navy)">ClearScope</a> product</span></div>
   <div class="w-10 h-1" style="background:var(--orange)"></div>
 </footer>
 
 <!-- ============ DASHBOARD (logged-in home) ============ -->
 <section id="dashboard-section" class="hidden mb-8">
   <div class="flex items-center justify-between flex-wrap gap-3">
-    <h2 class="text-2xl font-bold" style="color:var(--navy)">Dashboard</h2>
+    <h2 class="text-2xl font-bold flex items-center gap-2.5" style="color:var(--navy)"><img src="/static/logo-tabulator.png" alt="ClearScope" class="w-8 h-8 rounded-md" width="32" height="32">Dashboard</h2>
     <div class="flex gap-2 text-sm font-semibold" id="dash-tabs">
       <button data-dtab="suite" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">Suite</button>
       <button data-dtab="tabs" class="dash-tab px-4 py-2 rounded-lg bg-white border border-slate-200">My tabulations</button>
