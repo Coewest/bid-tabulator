@@ -771,7 +771,10 @@ document.getElementById("go").onclick = function(){
             rows = db.execute(
                 """SELECT u.id, u.email, u.created_at, u.company_name,
                           (SELECT COUNT(*) FROM tabulations t WHERE t.user_id=u.id) AS tab_count,
-                          COALESCE(s.status, 'none') AS sub_status
+                          COALESCE(s.status, 'none') AS sub_status,
+                          CASE WHEN s.status='active'
+                                AND (s.stripe_subscription_id IS NULL OR s.stripe_subscription_id='')
+                               THEN 1 ELSE 0 END AS is_comp
                    FROM users u
                    LEFT JOIN subscriptions s ON s.user_id=u.id
                    ORDER BY u.id DESC""").fetchall()
@@ -786,17 +789,28 @@ document.getElementById("go").onclick = function(){
         try:
             total_users = db.execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
             total_tabs = db.execute("SELECT COUNT(*) c FROM tabulations").fetchone()["c"]
+            # Honesty rule (same as the Inventory founder counters): a row
+            # counts toward Paying/MRR only when it is active AND backed by a
+            # real Stripe subscription. Founder comp rows are active with a
+            # NULL stripe_subscription_id — they are reported separately as
+            # "comped" and never folded into paying/MRR.
+            real_sub = "stripe_subscription_id IS NOT NULL AND stripe_subscription_id != ''"
             paying = db.execute(
-                "SELECT COUNT(*) c FROM subscriptions WHERE status IN ('active','trialing','past_due')"
+                f"SELECT COUNT(*) c FROM subscriptions WHERE status='active' AND {real_sub}"
             ).fetchone()["c"]
             annual = db.execute(
-                "SELECT COUNT(*) c FROM subscriptions WHERE status IN ('active','trialing','past_due') AND billing_interval='year'"
+                f"SELECT COUNT(*) c FROM subscriptions WHERE status='active' AND {real_sub} AND billing_interval='year'"
+            ).fetchone()["c"]
+            comped = db.execute(
+                "SELECT COUNT(*) c FROM subscriptions WHERE status='active' "
+                "AND (stripe_subscription_id IS NULL OR stripe_subscription_id='')"
             ).fetchone()["c"]
             monthly = paying - annual
             return jsonify(stats={
                 "total_users": total_users,
                 "total_tabulations": total_tabs,
                 "paying_customers": paying,
+                "comped": comped,
                 "mrr": monthly * 129 + annual * 1290 // 12,
             })
         finally:
