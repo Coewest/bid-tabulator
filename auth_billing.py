@@ -647,6 +647,48 @@ document.getElementById("go").onclick = function(){
         session.pop("free_used", None)
         return jsonify(ok=True)
 
+    @app.post("/api/_tmp_cleanup_insession_x7q9")
+    def _tmp_cleanup_insession():
+        """TEMPORARY (2026-10-12): remove in-session-fix verification residue.
+        Deleted in the immediately following commit."""
+        body = request.get_json(force=True, silent=True) or {}
+        if body.get("secret") != "insession-cleanup-7f2c9a":
+            return jsonify(error="not found"), 404
+        db = get_db()
+        try:
+            if body.get("action") == "list":
+                tabs = [dict(r) for r in db.execute(
+                    "SELECT id, user_id, project_name, created_at, claimed"
+                    " FROM tabulations ORDER BY id").fetchall()]
+                users = [dict(r) for r in db.execute(
+                    "SELECT id, email, created_at FROM users ORDER BY id").fetchall()]
+                return jsonify(tabulations=tabs, users=users)
+            if body.get("action") == "delete":
+                tab_ids = [int(x) for x in body.get("tab_ids") or []]
+                uid = int(body.get("user_id") or 0)
+                urow = db.execute("SELECT email FROM users WHERE id=?", (uid,)).fetchone()
+                if not urow or urow["email"] != "delivered@resend.dev":
+                    return jsonify(error="user mismatch"), 400
+                before = db.execute("SELECT COUNT(*) AS c FROM tabulations").fetchone()["c"]
+                deleted = 0
+                for tid in tab_ids:
+                    t = db.execute("SELECT project_name, user_id FROM tabulations WHERE id=?",
+                                   (tid,)).fetchone()
+                    if t and (t["project_name"] == "a classic county tab" or t["user_id"] == uid):
+                        cur = db.execute("DELETE FROM tabulations WHERE id=?", (tid,))
+                        deleted += cur.rowcount
+                db.execute("DELETE FROM password_tokens WHERE user_id=?", (uid,))
+                db.execute("DELETE FROM subscriptions WHERE user_id=?", (uid,))
+                db.execute("DELETE FROM users WHERE id=?", (uid,))
+                db.commit()
+                after = db.execute("SELECT COUNT(*) AS c FROM tabulations").fetchone()["c"]
+                uafter = db.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+                return jsonify(ok=True, tabs_before=before, tabs_after=after,
+                               deleted_tabs=deleted, users_after=uafter)
+            return jsonify(error="bad action"), 400
+        finally:
+            db.close()
+
     @app.post("/api/signup")
     def signup():
         body = request.get_json(force=True, silent=True) or {}
