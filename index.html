@@ -1503,7 +1503,13 @@
     document.querySelectorAll(".dash-tab").forEach(function(b){
       b.classList.toggle("active", b.dataset.dtab===name);
     });
-    if (name==="getpaid") loadGetPaid();
+    if (name==="getpaid"){
+      loadGetPaid();
+      /* Page-view tracking for the Get-Paid view (Coe 2026-10-12): the SPA
+         never changes URL for dashboard tabs, so record the open here —
+         fires only when the view is actually switched to. */
+      if (window.trackPageView) window.trackPageView("/get-paid");
+    }
     if (name==="suite") loadSuiteOverview();
   }
   document.querySelectorAll(".dash-tab").forEach(function(b){
@@ -3074,16 +3080,23 @@
 
 /* ---------- page view tracking (Coe 2026-10-10) ---------- */
 (function(){
-  try {
-    fetch("/api/track", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({
-        path: window.location.pathname,
-        referrer: document.referrer || ""
-      })
-    }).catch(function(){});
-  } catch(e) {}
+  /* Reusable tracker: the initial page load fires once with the real
+     pathname + document referrer; in-app views (SPA tabs with no URL
+     change) call trackPageView("/their-path") when actually opened —
+     those send no referrer, since it's internal navigation. */
+  window.trackPageView = function(path){
+    try {
+      fetch("/api/track", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          path: path,
+          referrer: (path === window.location.pathname) ? (document.referrer || "") : ""
+        })
+      }).catch(function(){});
+    } catch(e) {}
+  };
+  window.trackPageView(window.location.pathname);
 })();
 
 /* ---------- guided tutorial (Coe 2026-10-10) ---------- */
