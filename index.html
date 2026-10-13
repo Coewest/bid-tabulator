@@ -581,6 +581,10 @@
         <span class="text-sm text-slate-500">Tabulations run — split by the account's current plan (free / subscriber / no account)</span>
       </div>
       <div id="tracking-tabs" class="text-sm text-slate-500">Loading…</div>
+      <div class="flex items-center justify-between mt-6 mb-3">
+        <span class="text-sm text-slate-500">Outreach emails sent — this product only (GC sends + Tabulator batches)</span>
+      </div>
+      <div id="tracking-emails" class="text-sm text-slate-500">Loading…</div>
       <div class="grid md:grid-cols-2 gap-6 mt-6">
         <div>
           <h4 class="font-semibold mb-2" style="color:var(--navy)">Top pages (30d)</h4>
@@ -1712,6 +1716,19 @@
             return '<div class="rounded-lg border border-slate-200 p-3"><div class="text-xs text-slate-500">'+c[0]+
               '</div><div class="font-bold mt-1" style="color:var(--teal,#0E7490)">'+c[1]+'</div></div>';
           }).join("") + '</div>';
+      }
+      var emEl = $("tracking-emails");
+      if (emEl) {
+        if (t.emails) {
+          var ecards = [["Today", t.emails.today], ["Last 7 days", t.emails.last_7d], ["Last 30 days", t.emails.last_30d]];
+          emEl.innerHTML = '<div class="grid grid-cols-3 gap-3">' +
+            ecards.map(function(c){
+              return '<div class="rounded-lg border border-slate-200 p-3"><div class="text-xs text-slate-500">'+c[0]+
+                '</div><div class="font-bold mt-1" style="color:var(--navy)">'+c[1]+' sent</div></div>';
+            }).join("") + '</div>';
+        } else {
+          emEl.textContent = "Email counts unavailable right now.";
+        }
       }
       var maxV = Math.max.apply(null, t.daily.map(function(d){ return d.views; }).concat([1]));
       $("tracking-daily").innerHTML = '<div class="flex items-end gap-1" style="height:80px">' +
