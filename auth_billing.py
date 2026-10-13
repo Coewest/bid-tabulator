@@ -22,6 +22,7 @@ import os
 import secrets
 import sqlite3
 import time
+import urllib.error
 import urllib.request
 from html import escape as html_escape
 from datetime import datetime, timezone
@@ -452,6 +453,19 @@ def send_email(to, subject, body_html, text=None):
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return 200 <= resp.status < 300
+    except urllib.error.HTTPError as e:
+        # Surface Resend's own error name/message so a rejection (e.g. a
+        # suppressed address) is self-diagnosing in the logs.
+        detail = ""
+        try:
+            err_body = json.loads(e.read().decode("utf-8", "replace") or "{}")
+            parts = [str(err_body[k]) for k in ("name", "message") if err_body.get(k)]
+            if parts:
+                detail = " | resend_error: " + ": ".join(parts)
+        except Exception:
+            pass
+        print(f"[send_email] FAILED to={to}: {type(e).__name__}: {e}{detail}", flush=True)
+        return False
     except Exception as e:
         print(f"[send_email] FAILED to={to}: {type(e).__name__}: {e}", flush=True)
         return False
@@ -600,7 +614,13 @@ document.getElementById("go").onclick = function(){
             "tabulation and use the save step again — or just reply to this email.</p>"
             "<p>— ClearScope Tabulator</p>")
         ok = send_email(email, "Your bid tabulation is saved", body_html)
-        return jsonify(ok=True, emailed=ok)
+        # Also hand the SAME one-time link to this browser session: possession
+        # of the claim token already proved this browser owns the save, so
+        # in-session delivery is no weaker than the email — and an address
+        # Resend permanently refuses is no longer locked out. Only this
+        # response carries the path; the token is never listed elsewhere.
+        return jsonify(ok=True, emailed=ok,
+                       set_password_path=f"/set-password?token={raw}")
 
     @app.get("/set-password")
     def set_password_page():
