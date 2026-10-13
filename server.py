@@ -16,10 +16,11 @@ import json
 import os
 import re
 import secrets
+import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, request, jsonify, send_from_directory, session, g
+from flask import Flask, request, jsonify, make_response, send_from_directory, session, g
 
 # "Today" on the admin dashboard means Coe's calendar day (America/Chicago),
 # not a rolling 24h window and not UTC. tzdata is in requirements.txt so
@@ -1902,166 +1903,174 @@ def _do_upload():
             os.close(fd)
             f.save(path)
             saved.append((path, f.filename, ext))
-
-        # decide mode: single PDF that parses as a multi-bidder tab?
-        if len(saved) == 1 and saved[0][2] == ".pdf":
-            path, filename = saved[0][0], saved[0][1]
-            # Format-specific parsers first (cheaper and more precise than table extraction)
-            pages = _pdf_full_text(path)
-            data, errs = None, []
-            if detect_verdantas_format(pages):
-                data, errs = extract_verdantas_summary(path, filename)
-            elif detect_mass_housing(pages):
-                data, errs = extract_mass_housing(path, filename)
-            elif detect_board_packet(pages):
-                data, errs = extract_board_packet(path, filename)
-            if data and len(data.get("bidders", [])) >= 2 and data.get("items"):
-                return jsonify(data)
-            if data and data.get("format") == "board_packet":
-                # Board packet: informational only, never ranked
-                return jsonify(data)
-            # fall through to standard table extraction
-            data, errs2 = extract_pdf_tab(path, filename)
-            if data and len(data["bidders"]) >= 2 and data["items"]:
-                return jsonify(data)
-            # fall through to single-bidder mode. Tab-attempt warnings describe
-            # a discarded parse — keep them only if single-bidder also fails.
-            b, errs3 = extract_pdf_single(path, filename)
-            bidders = [b] if b else []
-            warnings = (errs + errs2 + errs3) if not b else errs3
-        else:
-            bidders, warnings = [], []
-            for path, filename, ext in saved:
-                if ext == ".pdf":
-                    # try tab first
-                    data, errs = extract_pdf_tab(path, filename)
-                    if data and len(data["bidders"]) >= 2 and data["items"]:
-                        return jsonify(data)
-                    b, errs2 = extract_pdf_single(path, filename)
-                    # tab-attempt warnings describe a discarded parse — keep
-                    # them only if single-bidder extraction also fails.
-                    warnings += errs2 if b else (errs + errs2)
-                elif ext in (".xlsx", ".xls"):
-                    b, errs2 = extract_excel(path, filename)
-                    if isinstance(b, dict) and b.pop("_is_tab", False):
-                        # multi-bidder tab found in this workbook
-                        return jsonify(b)
-                    warnings += errs2
-                else:
-                    b, errs2 = extract_csv_file(path, filename)
-                    if isinstance(b, dict) and b.pop("_is_tab", False):
-                        # multi-bidder tab found in this CSV
-                        return jsonify(b)
-                    warnings += errs2
-                if b:
-                    bidders.append(b)
-            if not bidders:
-                return jsonify(error="could not extract bid data",
-                               warnings=warnings), 422
-
-        items = merge_single_bids(bidders)
-        # Round 4 fix (Sim 25): flag cross-scope comparisons
-        scope_notes = _apply_scope_comparability(items, bidders)
-        n_b = len(bidders)
-        bidder_excluded = []
-        for bi in range(n_b):
-            priced = sum(1 for it in items
-                         if it["values"][bi]["status"] == "priced"
-                         and it["values"][bi]["amount"] not in (None, 0))
-            bidder_excluded.append(priced == 0)
-        # bids mode: verify against each file's own stated total when present.
-        # Tax-aware: try tax-inclusive first, then tax-exclusive (same as tab mode).
-        def _bids_calc(bi):
-            return sum(it["values"][bi]["amount"] for it in items
-                       if it.get("row_type", "amount") == "amount"
-                       and not it.get("deduct") and not it.get("alternate")
-                       and it["values"][bi]["status"] in ("priced", "included")
-                       and it["values"][bi]["amount"] is not None)
-
-        bids_total_states = []
-        bids_submitted = []
-        for bi, b in enumerate(bidders):
-            calc = _bids_calc(bi)
-            tax = b.get("tax_total", 0.0) or 0.0
-            stated = b.get("stated_total")
-            bids_submitted.append(stated)
-            state = "unparseable"
-            if stated is not None and calc > 0:
-                tol = max(1.0, abs(stated) * 0.002)
-                if abs((calc + tax) - stated) <= tol:
-                    state = "verified"
-                elif abs(calc - stated) <= tol:
-                    state = "verified"
-                else:
-                    state = "mismatch"
-            bids_total_states.append(state)
-            if state == "mismatch":
-                warnings.append(
-                    f"{b['name']}: line items sum to ${calc:,.2f}"
-                    + (f" + ${tax:,.2f} tax" if tax else "") +
-                    f" but the file states ${stated:,.2f} — showing both, "
-                    f"verify which is correct")
-        basis_state, basis_notes = compute_basis_state(items)
-        low_conf_counts = [sum(1 for it in items if it["values"][bi]["confidence"] == "low")
-                           for bi in range(n_b)]
-        # Round 4 fix: extraction quality from actual data, not hardcoded "good".
-        # A single phantom bidder from a failed tab parse must never look confident.
-        total_vals = sum(1 for it in items for bi in range(n_b)
-                         if it["values"][bi]["status"] in ("priced", "included"))
-        low_vals = sum(1 for it in items for bi in range(n_b)
-                       if it["values"][bi]["confidence"] == "low")
-        bids_extraction_quality = (
-            "poor" if n_b < 2 or (total_vals and low_vals / total_vals > 0.4)
-            else "good")
-        ranking = compute_ranking(items, bidder_excluded,
-                                  [b["name"] for b in bidders],
-                                  bids_extraction_quality, low_conf_counts,
-                                  blocked=(basis_state == "unknown"),
-                                  total_states=bids_total_states)
-        warnings_b = warnings + [
-            "single-bid files: bidder names taken from filenames - please confirm"]
-        if ranking["state"] == "blocked":
-            warnings_b.append("⛔ Cannot rank these bids: " + " ".join(basis_notes))
-        elif ranking["state"] == "too_close":
-            warnings_b.append("⚠ " + ranking["note"])
-        elif ranking["state"] == "needs_review":
-            warnings_b.append("⛔ " + ranking["note"])
-        if scope_notes:
-            warnings_b.append("⛔ Cross-scope warning: " + "; ".join(scope_notes))
-        # bids-mode taxes: captured per-file, never mixed into line items
-        bids_taxes = [b.get("tax_total", 0.0) or 0.0 for b in bidders]
-        bids_has_tax = any(b.get("has_tax") for b in bidders)
-        return jsonify({
-            "project_name": "Bid package",
-            "mode": "bids",
-            "bidders": [{"name": b["name"], "location": b.get("location", ""),
-                         "file": b["file"], "excluded": ex, "total_state": ts}
-                        for b, ex, ts in zip(bidders, bidder_excluded,
-                                             bids_total_states)],
-            "items": items,
-            "submitted_totals": bids_submitted,
-            "subtotals": [None] * len(bidders),
-            "taxes": bids_taxes,
-            "has_tax_rows": bids_has_tax,
-            "tax_rate_detected": None,
-            "tax_basis_detected": [None] * len(bidders),
-            "has_substitution_alternates": (
-                any(it.get("deduct") for it in items)
-                and any(it.get("alternate") for it in items)),
-            "basis_state": basis_state,
-            "basis_notes": basis_notes,
-            "ranking": ranking,
-            "extraction_quality": bids_extraction_quality,
-            "warnings": warnings_b,
-            "bidder_confidence": "low",
-            "value_scores": [None] * len(bidders),
-        })
+        return _parse_saved_files(saved)
     finally:
         for path, _, _ in saved:
             try:
                 os.unlink(path)
             except OSError:
                 pass
+
+
+def _parse_saved_files(saved):
+    """Parse already-saved temp files [(path, filename, ext), ...].
+
+    Split out of _do_upload so the sample-package demo can run the exact
+    same parsing pipeline on bundled files. Callers own the temp files
+    and are responsible for unlinking them."""
+    # decide mode: single PDF that parses as a multi-bidder tab?
+    if len(saved) == 1 and saved[0][2] == ".pdf":
+        path, filename = saved[0][0], saved[0][1]
+        # Format-specific parsers first (cheaper and more precise than table extraction)
+        pages = _pdf_full_text(path)
+        data, errs = None, []
+        if detect_verdantas_format(pages):
+            data, errs = extract_verdantas_summary(path, filename)
+        elif detect_mass_housing(pages):
+            data, errs = extract_mass_housing(path, filename)
+        elif detect_board_packet(pages):
+            data, errs = extract_board_packet(path, filename)
+        if data and len(data.get("bidders", [])) >= 2 and data.get("items"):
+            return jsonify(data)
+        if data and data.get("format") == "board_packet":
+            # Board packet: informational only, never ranked
+            return jsonify(data)
+        # fall through to standard table extraction
+        data, errs2 = extract_pdf_tab(path, filename)
+        if data and len(data["bidders"]) >= 2 and data["items"]:
+            return jsonify(data)
+        # fall through to single-bidder mode. Tab-attempt warnings describe
+        # a discarded parse — keep them only if single-bidder also fails.
+        b, errs3 = extract_pdf_single(path, filename)
+        bidders = [b] if b else []
+        warnings = (errs + errs2 + errs3) if not b else errs3
+    else:
+        bidders, warnings = [], []
+        for path, filename, ext in saved:
+            if ext == ".pdf":
+                # try tab first
+                data, errs = extract_pdf_tab(path, filename)
+                if data and len(data["bidders"]) >= 2 and data["items"]:
+                    return jsonify(data)
+                b, errs2 = extract_pdf_single(path, filename)
+                # tab-attempt warnings describe a discarded parse — keep
+                # them only if single-bidder extraction also fails.
+                warnings += errs2 if b else (errs + errs2)
+            elif ext in (".xlsx", ".xls"):
+                b, errs2 = extract_excel(path, filename)
+                if isinstance(b, dict) and b.pop("_is_tab", False):
+                    # multi-bidder tab found in this workbook
+                    return jsonify(b)
+                warnings += errs2
+            else:
+                b, errs2 = extract_csv_file(path, filename)
+                if isinstance(b, dict) and b.pop("_is_tab", False):
+                    # multi-bidder tab found in this CSV
+                    return jsonify(b)
+                warnings += errs2
+            if b:
+                bidders.append(b)
+        if not bidders:
+            return jsonify(error="could not extract bid data",
+                           warnings=warnings), 422
+
+    items = merge_single_bids(bidders)
+    # Round 4 fix (Sim 25): flag cross-scope comparisons
+    scope_notes = _apply_scope_comparability(items, bidders)
+    n_b = len(bidders)
+    bidder_excluded = []
+    for bi in range(n_b):
+        priced = sum(1 for it in items
+                     if it["values"][bi]["status"] == "priced"
+                     and it["values"][bi]["amount"] not in (None, 0))
+        bidder_excluded.append(priced == 0)
+    # bids mode: verify against each file's own stated total when present.
+    # Tax-aware: try tax-inclusive first, then tax-exclusive (same as tab mode).
+    def _bids_calc(bi):
+        return sum(it["values"][bi]["amount"] for it in items
+                   if it.get("row_type", "amount") == "amount"
+                   and not it.get("deduct") and not it.get("alternate")
+                   and it["values"][bi]["status"] in ("priced", "included")
+                   and it["values"][bi]["amount"] is not None)
+
+    bids_total_states = []
+    bids_submitted = []
+    for bi, b in enumerate(bidders):
+        calc = _bids_calc(bi)
+        tax = b.get("tax_total", 0.0) or 0.0
+        stated = b.get("stated_total")
+        bids_submitted.append(stated)
+        state = "unparseable"
+        if stated is not None and calc > 0:
+            tol = max(1.0, abs(stated) * 0.002)
+            if abs((calc + tax) - stated) <= tol:
+                state = "verified"
+            elif abs(calc - stated) <= tol:
+                state = "verified"
+            else:
+                state = "mismatch"
+        bids_total_states.append(state)
+        if state == "mismatch":
+            warnings.append(
+                f"{b['name']}: line items sum to ${calc:,.2f}"
+                + (f" + ${tax:,.2f} tax" if tax else "") +
+                f" but the file states ${stated:,.2f} — showing both, "
+                f"verify which is correct")
+    basis_state, basis_notes = compute_basis_state(items)
+    low_conf_counts = [sum(1 for it in items if it["values"][bi]["confidence"] == "low")
+                       for bi in range(n_b)]
+    # Round 4 fix: extraction quality from actual data, not hardcoded "good".
+    # A single phantom bidder from a failed tab parse must never look confident.
+    total_vals = sum(1 for it in items for bi in range(n_b)
+                     if it["values"][bi]["status"] in ("priced", "included"))
+    low_vals = sum(1 for it in items for bi in range(n_b)
+                   if it["values"][bi]["confidence"] == "low")
+    bids_extraction_quality = (
+        "poor" if n_b < 2 or (total_vals and low_vals / total_vals > 0.4)
+        else "good")
+    ranking = compute_ranking(items, bidder_excluded,
+                              [b["name"] for b in bidders],
+                              bids_extraction_quality, low_conf_counts,
+                              blocked=(basis_state == "unknown"),
+                              total_states=bids_total_states)
+    warnings_b = warnings + [
+        "single-bid files: bidder names taken from filenames - please confirm"]
+    if ranking["state"] == "blocked":
+        warnings_b.append("⛔ Cannot rank these bids: " + " ".join(basis_notes))
+    elif ranking["state"] == "too_close":
+        warnings_b.append("⚠ " + ranking["note"])
+    elif ranking["state"] == "needs_review":
+        warnings_b.append("⛔ " + ranking["note"])
+    if scope_notes:
+        warnings_b.append("⛔ Cross-scope warning: " + "; ".join(scope_notes))
+    # bids-mode taxes: captured per-file, never mixed into line items
+    bids_taxes = [b.get("tax_total", 0.0) or 0.0 for b in bidders]
+    bids_has_tax = any(b.get("has_tax") for b in bidders)
+    return jsonify({
+        "project_name": "Bid package",
+        "mode": "bids",
+        "bidders": [{"name": b["name"], "location": b.get("location", ""),
+                     "file": b["file"], "excluded": ex, "total_state": ts}
+                    for b, ex, ts in zip(bidders, bidder_excluded,
+                                         bids_total_states)],
+        "items": items,
+        "submitted_totals": bids_submitted,
+        "subtotals": [None] * len(bidders),
+        "taxes": bids_taxes,
+        "has_tax_rows": bids_has_tax,
+        "tax_rate_detected": None,
+        "tax_basis_detected": [None] * len(bidders),
+        "has_substitution_alternates": (
+            any(it.get("deduct") for it in items)
+            and any(it.get("alternate") for it in items)),
+        "basis_state": basis_state,
+        "basis_notes": basis_notes,
+        "ranking": ranking,
+        "extraction_quality": bids_extraction_quality,
+        "warnings": warnings_b,
+        "bidder_confidence": "low",
+        "value_scores": [None] * len(bidders),
+    })
 
 
 @app.route("/api/upload", methods=["POST"])
@@ -2108,6 +2117,56 @@ def upload():
                     session["free_used"] = True
     except Exception:
         pass  # never break parsing because of persistence
+    return resp
+
+
+# ---------------------------------------------------------------- sample demo
+#
+# One-click, no-upload demo for cold visitors: run the REAL parser on a
+# bundled fictional bid package (sample_data/) so a GC can see a genuine
+# leveled tabulation without handing over their subs' real bids first.
+# Deliberately bypasses the gated upload() wrapper: nothing is persisted,
+# no account is created, no claim token is minted, and the visitor's free
+# anonymous tabulation is NOT consumed (session["free_used"] untouched).
+
+SAMPLE_PACKAGE_DIR = os.path.join(BASE, "sample_data")
+SAMPLE_PACKAGE_FILES = [
+    "Volt_Edge_Electric_LLC.csv",
+    "Prairie_State_Electric_Inc.csv",
+    "KC_Metro_Electric_Co.csv",
+    "Brightline_Electrical_Contractors.csv",
+]
+SAMPLE_PROJECT_NAME = ("SAMPLE — Electrical · Harvest Pointe Retail Center "
+                       "(fictional)")
+
+
+@app.route("/api/sample", methods=["GET", "POST"])
+def sample_package():
+    saved = []
+    try:
+        for fname in SAMPLE_PACKAGE_FILES:
+            src = os.path.join(SAMPLE_PACKAGE_DIR, fname)
+            ext = os.path.splitext(fname)[1].lower()
+            fd, path = tempfile.mkstemp(suffix=ext)
+            os.close(fd)
+            shutil.copyfile(src, path)
+            saved.append((path, fname, ext))
+        resp = make_response(_parse_saved_files(saved))
+    finally:
+        for path, _, _ in saved:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+    if resp.status_code == 200:
+        data = resp.get_json()
+        if data and not data.get("error"):
+            data["sample"] = True
+            data["project_name"] = SAMPLE_PROJECT_NAME
+            data["saved"] = False
+            data.pop("tabulation_id", None)
+            data.pop("claim_token", None)
+            return jsonify(data)
     return resp
 
 
