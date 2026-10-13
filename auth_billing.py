@@ -883,6 +883,10 @@ document.getElementById("go").onclick = function(){
         stripe.api_key = STRIPE_SECRET_KEY
         etype = event["type"]
         obj = event["data"]["object"]
+        # stripe-python >= 12 resource objects are not dicts (no .get());
+        # normalize to a plain dict so every branch below behaves the same.
+        if hasattr(obj, "to_dict"):
+            obj = obj.to_dict()
 
         def upsert(user_id, customer_id, sub_id, status, period_end, billing_interval="month"):
             db = get_db()
@@ -913,6 +917,8 @@ document.getElementById("go").onclick = function(){
             service_key = (sess.get("metadata") or {}).get("service_key") or ""
             if uid and sub_id:
                 sub = stripe.Subscription.retrieve(sub_id)
+                if hasattr(sub, "to_dict"):
+                    sub = sub.to_dict()
                 if service_key in ("getpaid", "suite"):
                     # Service checkout (Get-Paid or GC Suite): record the service row.
                     price_id = None
