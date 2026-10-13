@@ -439,6 +439,10 @@ def send_email(to, subject, body_html, text=None):
     if not key:
         return False
     payload = {"from": "ClearScope Tabulator <coe@tabulator.clearscopebid.com>",
+               # Reply fix 2026-10-13: the tabulator subdomain's MX points at
+               # the app host (no mail server) — replies must go to the root
+               # domain, which receives via Cloudflare Email Routing.
+               "reply_to": "coe@clearscopebid.com",
                "to": [to], "subject": subject, "html": body_html}
     if text:
         payload["text"] = text
