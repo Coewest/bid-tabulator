@@ -359,6 +359,18 @@
     </div>
   </section>
 
+  <!-- ============ WATCH IT WORK (landing only) ============ -->
+  <section id="landing-video" class="mt-14">
+    <h2 class="text-3xl font-bold" style="color:var(--navy)">Watch it work</h2>
+    <p class="text-slate-500 mt-2 max-w-2xl">84 seconds, one real bid package: bidders extracted, every line leveled, the real low bid flagged — then saved straight into the GC Suite dashboard.</p>
+    <div class="mt-5 rounded-xl overflow-hidden shadow-sm border border-slate-200" style="background:#000">
+      <video controls preload="none" poster="/static/tabulator-demo-poster.jpg" class="w-full block" style="aspect-ratio:8/5" aria-label="Bid Tabulator demo video">
+        <source src="/static/tabulator-demo.mp4" type="video/mp4">
+        Your browser can&rsquo;t play this video — <a href="/static/tabulator-demo.mp4" style="color:#f58b53">download the demo (MP4)</a>.
+      </video>
+    </div>
+  </section>
+
   <!-- ============ HOW IT WORKS (landing only) ============ -->
   <section id="landing-how" class="mt-14 text-white rounded-xl p-8 md:p-10" style="background:var(--navy-deep)">
     <h2 class="text-3xl font-bold">How it works</h2>
@@ -1479,7 +1491,7 @@
   function renderLoggedInView(){
     if (waiverToken){ enterWaiverMode(); return; }  // /w/<token> public signing page
     var loggedIn = !!authUser;
-    ["hero","landing-how","landing-cta","landing-competitors"].forEach(function(id){
+    ["hero","landing-how","landing-cta","landing-competitors","landing-video"].forEach(function(id){
       var el = $(id); if (el) el.classList.toggle("hidden", loggedIn);
     });
     var up = $("upload-section"); if (up) up.classList.toggle("hidden", loggedIn);
@@ -2860,7 +2872,7 @@
 
   /* ---------- public waiver signing (/w/<token>, no login) ---------- */
   function enterWaiverMode(){
-    ["hero","landing-how","landing-cta","landing-competitors"].forEach(function(id){
+    ["hero","landing-how","landing-cta","landing-competitors","landing-video"].forEach(function(id){
       var el = $(id); if (el) el.classList.add("hidden");
     });
     var app = $("app"); if (app) app.classList.add("hidden");
@@ -2953,7 +2965,7 @@
   }
   function openGpDemo(){
     gpDemoHidden = [];
-    ["hero","landing-how","landing-cta","landing-competitors"].forEach(function(id){
+    ["hero","landing-how","landing-cta","landing-competitors","landing-video"].forEach(function(id){
       var el = $(id);
       if (el && !el.classList.contains("hidden")){ el.classList.add("hidden"); gpDemoHidden.push(el); }
     });
