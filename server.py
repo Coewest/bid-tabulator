@@ -1697,6 +1697,53 @@ def track_page_view():
     return jsonify(ok=True)
 
 
+_email_stats_cache = {"at": 0, "data": None}
+
+
+def _tabulator_email_counts():
+    """Outreach emails sent for THIS product only (GC sends from
+    coe@tryclearscope.com + Tabulator batch sends), bucketed per day by the
+    Tracker server's /api/email-stats endpoint (per-product counts fixed
+    2026-10-13 — each product's dashboard shows only its own sends).
+    Returns {"today": n, "last_7d": n, "last_30d": n} or None on any failure
+    (the admin page renders a placeholder; tracking never breaks on this)."""
+    import time as _time
+    import urllib.request as _urlreq
+    now_s = _time.time()
+    if _email_stats_cache["data"] is not None and now_s - _email_stats_cache["at"] < 600:
+        return _email_stats_cache["data"]
+    secret = os.environ.get("EMAIL_COUNT_SECRET")
+    if not secret:
+        return None
+    try:
+        req = _urlreq.Request(
+            "https://clearscopebid.com/api/email-stats",
+            headers={"x-email-count-secret": secret,
+                     "User-Agent": "ClearScope-Tabulator/1.0"})
+        with _urlreq.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read())
+        by_day = (payload.get("products") or {}).get("tabulator") or {}
+        today = datetime.now(CHICAGO).date()
+
+        def _sum(days):
+            total = 0
+            for d, c in by_day.items():
+                try:
+                    age = (today - datetime.strptime(d, "%Y-%m-%d").date()).days
+                except Exception:
+                    continue
+                if 0 <= age < days:
+                    total += c
+            return total
+
+        data = {"today": by_day.get(today.isoformat(), 0),
+                "last_7d": _sum(7), "last_30d": _sum(30)}
+        _email_stats_cache.update(at=now_s, data=data)
+        return data
+    except Exception:
+        return None
+
+
 @app.route("/api/admin/tracking")
 @auth_billing.admin_required
 def admin_tracking():
@@ -1794,6 +1841,7 @@ def admin_tracking():
         stats["top_pages"] = top_pages
         stats["top_referrers"] = top_refs
         stats["daily"] = daily
+        stats["emails"] = _tabulator_email_counts()
         return jsonify(stats)
     finally:
         db.close()
