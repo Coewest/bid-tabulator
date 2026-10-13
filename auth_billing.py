@@ -675,8 +675,8 @@ document.getElementById("go").onclick = function(){
                     t = db.execute("SELECT project_name, user_id FROM tabulations WHERE id=?",
                                    (tid,)).fetchone()
                     if t and (t["project_name"] == "a classic county tab" or t["user_id"] == uid):
-                        cur = db.execute("DELETE FROM tabulations WHERE id=?", (tid,))
-                        deleted += cur.rowcount
+                        db.execute("DELETE FROM tabulations WHERE id=?", (tid,))
+                        deleted += cur_deleted(db)
                 db.execute("DELETE FROM password_tokens WHERE user_id=?", (uid,))
                 db.execute("DELETE FROM subscriptions WHERE user_id=?", (uid,))
                 db.execute("DELETE FROM users WHERE id=?", (uid,))
