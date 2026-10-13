@@ -1639,6 +1639,7 @@
         ["Total users", s.total_users],
         ["Tabulations", s.total_tabulations],
         ["Paying", s.paying_customers],
+        ["Comped", s.comped || 0],
         ["MRR", "$"+s.mrr]
       ];
       $("admin-stats").innerHTML = cards.map(function(c){
@@ -1650,7 +1651,9 @@
       if (!res.ok) return;
       $("admin-users").innerHTML = res.body.users.map(function(u){
         var d = new Date(u.created_at*1000).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
-        var plan = u.sub_status==="active"
+        var plan = u.is_comp
+          ? '<span class="text-slate-500 font-semibold">● founder comp</span>'
+          : u.sub_status==="active"
           ? '<span class="text-green-700 font-semibold">● $129/mo</span>'
           : '<span class="text-slate-400">free</span>';
         return '<tr class="border-b border-slate-100"><td class="py-2 pr-4 font-medium">'+escapeHtml(u.email)+
