@@ -17,9 +17,18 @@ import os
 import re
 import secrets
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, request, jsonify, send_from_directory, session, g
+
+# "Today" on the admin dashboard means Coe's calendar day (America/Chicago),
+# not a rolling 24h window and not UTC. tzdata is in requirements.txt so
+# zoneinfo resolves even in slim containers; UTC is only a last resort.
+try:
+    from zoneinfo import ZoneInfo
+    CHICAGO = ZoneInfo("America/Chicago")
+except Exception:
+    CHICAGO = timezone.utc
 
 import auth_billing
 from auth_billing import get_db, getpaid_required, login_required, service_active
@@ -1662,7 +1671,7 @@ def track_page_view():
     is_bot = any(b in ua_lower for b in ("bot", "crawler", "spider", "headless", "selenium", "phantom"))
     # Daily salted visitor hash (no raw IP stored)
     ip = request.headers.get("X-Forwarded-For", request.remote_addr or "")
-    day = time.strftime("%Y-%m-%d")
+    day = datetime.now(CHICAGO).strftime("%Y-%m-%d")
     visitor_hash = hashlib.sha256(f"{ip}|{ua}|{day}|tabulator-salt".encode()).hexdigest()[:16]
     if is_bot:
         return jsonify(ok=True, bot=True)
@@ -1695,6 +1704,11 @@ def admin_tracking():
     from auth_billing import get_db
     import time
     now = int(time.time())
+    # Calendar-day start in Coe's timezone (midnight America/Chicago). The
+    # old code used a rolling 24h window for "today", so the counter never
+    # reset at midnight — it still held yesterday's views all morning.
+    today_start = int(datetime.now(CHICAGO).replace(
+        hour=0, minute=0, second=0, microsecond=0).timestamp())
     db = get_db()
     try:
         def count_since(seconds):
@@ -1703,9 +1717,15 @@ def admin_tracking():
                 (now - seconds,)
             ).fetchone()
             return {"views": row["c"], "visitors": row["u"]}
+        def count_from(ts):
+            row = db.execute(
+                "SELECT COUNT(*) as c, COUNT(DISTINCT visitor_hash) as u FROM page_views WHERE created_at >= ?",
+                (ts,)
+            ).fetchone()
+            return {"views": row["c"], "visitors": row["u"]}
         stats = {
             "last_hour": count_since(3600),
-            "today": count_since(86400),
+            "today": count_from(today_start),
             "last_7d": count_since(7 * 86400),
             "last_30d": count_since(30 * 86400),
             "all_time": count_since(now),
@@ -1715,7 +1735,7 @@ def admin_tracking():
         # same definition auth_billing.subscription_status uses; anon =
         # saved before any account existed). Added 2026-10-12 (Coe): the
         # traffic counters alone can't show visitors -> free-tab usage.
-        def tab_counts(seconds):
+        def tab_counts(since_ts):
             row = db.execute(
                 "SELECT COUNT(*) AS total,"
                 " COALESCE(SUM(CASE WHEN t.user_id IS NULL THEN 1 ELSE 0 END), 0) AS anon,"
@@ -1724,17 +1744,17 @@ def admin_tracking():
                 " COUNT(DISTINCT t.user_id) AS users"
                 " FROM tabulations t"
                 " LEFT JOIN subscriptions s ON s.user_id = t.user_id"
-                " WHERE t.created_at > ?", (now - seconds,)).fetchone()
+                " WHERE t.created_at >= ?", (since_ts,)).fetchone()
             total = row["total"]
             return {"total": total, "paid": row["paid"], "anon": row["anon"],
                     "free": total - row["paid"] - row["anon"],
                     "users": row["users"]}
         stats["tabulations"] = {
-            "last_hour": tab_counts(3600),
-            "today": tab_counts(86400),
-            "last_7d": tab_counts(7 * 86400),
-            "last_30d": tab_counts(30 * 86400),
-            "all_time": tab_counts(now),
+            "last_hour": tab_counts(now - 3600),
+            "today": tab_counts(today_start),
+            "last_7d": tab_counts(now - 7 * 86400),
+            "last_30d": tab_counts(now - 30 * 86400),
+            "all_time": tab_counts(0),
         }
         # Top pages (last 30d)
         top_pages = [
@@ -1752,17 +1772,22 @@ def admin_tracking():
                 (now - 30 * 86400,)
             ).fetchall()
         ]
-        # Daily views (last 14 days) for a simple chart
+        # Daily views (last 14 calendar days, America/Chicago) for the chart.
+        # The old rolling-24h buckets smeared each day's traffic across two
+        # bars and labeled them with the wrong dates.
         daily = []
+        chicago_today = datetime.now(CHICAGO).date()
         for i in range(13, -1, -1):
-            day_start = now - (i + 1) * 86400
-            day_end = now - i * 86400
+            d = chicago_today - timedelta(days=i)
+            nxt = d + timedelta(days=1)
+            day_start = int(datetime(d.year, d.month, d.day, tzinfo=CHICAGO).timestamp())
+            day_end = int(datetime(nxt.year, nxt.month, nxt.day, tzinfo=CHICAGO).timestamp())
             row = db.execute(
-                "SELECT COUNT(*) as c, COUNT(DISTINCT visitor_hash) as u FROM page_views WHERE created_at > ? AND created_at <= ?",
+                "SELECT COUNT(*) as c, COUNT(DISTINCT visitor_hash) as u FROM page_views WHERE created_at >= ? AND created_at < ?",
                 (day_start, day_end)
             ).fetchone()
             daily.append({
-                "date": time.strftime("%m/%d", time.localtime(day_end)),
+                "date": d.strftime("%m/%d"),
                 "views": row["c"],
                 "visitors": row["u"],
             })
