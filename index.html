@@ -266,7 +266,7 @@
       <button id="gp-demo-btn" class="px-7 py-3.5 text-lg font-bold rounded-lg border-2 text-white hover:bg-white/10" style="border-color:rgba(255,255,255,.35)">Try the Get-Paid demo</button>
       <span class="text-sm" style="color:#9fb3c1">First bid package free. $129/mo after that. No credit card.</span>
     </div>
-    <p class="mt-3 text-sm max-w-2xl" style="color:#9fb3c1">Prefer it in-house? Also available as a one-time $2,500 on-premise license — runs on your own server, and your sub bids never leave your building. <a href="#license" class="underline font-semibold" style="color:#f58b53">See the license option</a></p>
+    <p class="mt-3 text-sm max-w-2xl" style="color:#9fb3c1">Prefer it in-house? Also available as a one-time $2,500 on-premise license — runs on your own server, and your sub bids never leave your building. <a id="license-link" href="#license" class="underline font-semibold" style="color:#f58b53">See the license option</a></p>
   </div>
 </header>
 
@@ -305,6 +305,10 @@
       <button id="sample-btn" class="px-5 py-2.5 rounded-lg font-semibold border-2" style="border-color:var(--orange);color:var(--orange-dark)">▶ Run a sample bid package</button>
       <span class="text-sm text-slate-500">No bids of your own handy? Watch the real parser level a fictional 4-bidder
         electrical package — no upload, no account, and it doesn&rsquo;t use your free run.</span>
+    </div>
+
+    <div class="mt-6 rounded-lg border border-slate-200 bg-slate-50 p-4" role="note" aria-label="Bid data pledge">
+      <p class="text-sm text-slate-600"><span aria-hidden="true">🔒</span> <strong style="color:var(--navy)">Your bid data is yours.</strong> It's used only to build your tabulation — never shared, never sold, never used to train anything. Delete any tabulation permanently, any time. Tabulations nobody claims are automatically deleted after 30 days.</p>
     </div>
 
     <div id="upload-error" class="hidden mt-4 p-4 rounded-lg bg-red-50 text-red-800 text-sm"></div>
@@ -499,7 +503,8 @@
       <li><span class="font-bold" style="color:var(--orange-dark)">✓</span> <strong>No uploads, no phone-home</strong>; works with the internet unplugged</li>
       <li><span class="font-bold" style="color:var(--orange-dark)">✓</span> <strong>Your subs' pricing never touches our servers</strong> — we couldn't see it if we wanted to</li>
     </ul>
-    <p class="mt-5 text-slate-600">Ask about the on-premise license: <a href="mailto:coe@clearscopebid.com?subject=On-premise%20license" class="font-bold underline" style="color:var(--navy)">coe@clearscopebid.com</a></p>
+    <p class="mt-4 text-sm text-slate-500">Using the cloud version instead? The same principle applies: bid data is used only to build your tabulation, never shared or sold, and tabulations nobody claims are automatically deleted after 30 days.</p>
+    <p class="mt-5 text-slate-600">Ask about the on-premise license: <a id="license-mailto" href="mailto:coe@clearscopebid.com?subject=On-premise%20license" class="font-bold underline" style="color:var(--navy)">coe@clearscopebid.com</a></p>
   </section>
 </main>
 
@@ -618,6 +623,10 @@
         <span class="text-sm text-slate-500">Outreach emails sent — this product only (GC sends + Tabulator batches)</span>
       </div>
       <div id="tracking-emails" class="text-sm text-slate-500">Loading…</div>
+      <div class="flex items-center justify-between mt-6 mb-3">
+        <span class="text-sm text-slate-500">Funnel — anonymous step counters (sample runs, uploads, license interest)</span>
+      </div>
+      <div id="tracking-funnel" class="text-sm text-slate-500">Loading…</div>
       <div class="grid md:grid-cols-2 gap-6 mt-6">
         <div>
           <h4 class="font-semibold mb-2" style="color:var(--navy)">Top pages (30d)</h4>
@@ -704,6 +713,11 @@
       <span id="save-email-msg" class="text-sm text-blue-900"></span>
     </div>
     <p class="text-xs text-blue-800 mt-2">Prefer a password? <a href="#" id="save-prompt-pw" class="underline">Create an account the regular way</a></p>
+    <div class="mt-3 border-t border-blue-200 pt-3 flex flex-wrap items-center gap-2">
+      <span class="text-xs text-blue-800">Don't want this stored at all?</span>
+      <button id="save-delete-btn" class="text-xs font-semibold text-red-700 underline">Delete this tabulation permanently</button>
+      <span id="save-delete-msg" class="text-xs text-blue-900"></span>
+    </div>
   </div>
   <div id="save-prompt-done" class="hidden">
     <p class="text-sm text-blue-900"><strong>Saved &#10003;</strong> <span id="save-done-text">Check your inbox — we sent a link to set a password and open your tabulation whenever you need it.</span></p>
@@ -1614,6 +1628,22 @@
     b.addEventListener("click", function(){ switchDashTab(b.dataset.dtab); });
   });
 
+  function deleteSavedTabulation(id, btn){
+    if (!confirm("Delete this tabulation permanently? This cannot be undone.")) return;
+    btn.disabled = true;
+    api("/api/tabulations/"+id, {method:"DELETE"}).then(function(res){
+      if (!res.ok) throw new Error((res.body && res.body.error) || "Could not delete this tabulation.");
+      return api("/api/me");
+    }).then(function(res){
+      if (res && res.body) authUser = res.body.user || authUser;
+      renderNav();
+      loadTabulationList();
+    }).catch(function(err){
+      btn.disabled = false;
+      alert(err.message);
+    });
+  }
+
   function loadTabulationList(){
     api("/api/tabulations").then(function(res){
       if (!res.ok) return;
@@ -1626,12 +1656,17 @@
       $("dash-plan-note").textContent = planNote + "  ("+tabs.length+" saved)";
       $("tab-list").innerHTML = tabs.length ? tabs.map(function(t){
         var d = new Date(t.created_at*1000).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
-        return '<button data-tab="'+t.id+'" class="w-full text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
+        return '<div class="w-full flex items-stretch gap-2">'+
+          '<button type="button" data-tab="'+t.id+'" class="flex-1 text-left flex items-center justify-between bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 hover:border-orange-400">'+
           '<span class="font-semibold">'+escapeHtml(t.project_name)+'</span>'+
-          '<span class="text-sm text-slate-400">'+d+' →</span></button>';
+          '<span class="text-sm text-slate-400">'+d+' →</span></button>'+
+          '<button type="button" data-delete-tab="'+t.id+'" class="px-3 py-2 text-sm font-semibold text-red-600 border border-red-200 rounded-lg bg-white hover:bg-red-50" title="Delete this tabulation permanently">Delete</button></div>';
       }).join("") : '<p class="text-slate-500">No tabulations yet — start your first one free.</p>';
       $("tab-list").querySelectorAll("[data-tab]").forEach(function(b){
         b.addEventListener("click", function(){ loadTabulation(Number(b.dataset.tab)); });
+      });
+      $("tab-list").querySelectorAll("[data-delete-tab]").forEach(function(b){
+        b.addEventListener("click", function(){ deleteSavedTabulation(Number(b.dataset.deleteTab), b); });
       });
     });
   }
@@ -1810,6 +1845,32 @@
           emEl.textContent = "Email counts unavailable right now.";
         }
       }
+      var fnEl = $("tracking-funnel");
+      if (fnEl) {
+        if (t.funnel) {
+          var fsteps = [
+            ["Sample runs", "sample_run"],
+            ["Uploads started", "upload_started"],
+            ["Uploads succeeded", "upload_succeeded"],
+            ["Uploads gated (402)", "upload_gated"],
+            ["Uploads failed", "upload_failed"],
+            ["License section views", "license_section_view"],
+            ["License link clicks", "license_link_click"],
+            ["License email clicks", "license_mailto_click"]
+          ];
+          var fwin = [["Today", t.funnel.today], ["Last 7 days", t.funnel.last_7d], ["Last 30 days", t.funnel.last_30d]];
+          fnEl.innerHTML = fwin.map(function(w){
+            return '<div class="mb-3"><div class="text-xs text-slate-400 mb-1">' + w[0] + '</div>' +
+              '<div class="grid grid-cols-2 md:grid-cols-4 gap-3">' +
+              fsteps.map(function(s){
+                return '<div class="rounded-lg border border-slate-200 p-3"><div class="text-xs text-slate-500">' + s[0] +
+                  '</div><div class="font-bold mt-1" style="color:var(--navy)">' + (w[1][s[1]] || 0) + '</div></div>';
+              }).join("") + '</div></div>';
+          }).join("");
+        } else {
+          fnEl.textContent = "Funnel counts unavailable right now.";
+        }
+      }
       var maxV = Math.max.apply(null, t.daily.map(function(d){ return d.views; }).concat([1]));
       $("tracking-daily").innerHTML = '<div class="flex items-end gap-1" style="height:80px">' +
         t.daily.map(function(d){
@@ -1922,6 +1983,32 @@
   // Intercept upload 402s for gating
   var _origFetch = window.fetch;
 
+  function deletePendingTabulation(){
+    var btn = $("save-delete-btn"), msg = $("save-delete-msg");
+    if (!pendingTabId || !pendingClaimToken){
+      msg.textContent = "This tabulation can't be deleted from here.";
+      return;
+    }
+    if (!confirm("Delete this tabulation permanently? This cannot be undone.")) return;
+    btn.disabled = true; msg.textContent = "Deleting…";
+    api("/api/tabulations/"+pendingTabId+"/delete-unclaimed", {
+      method:"POST", body: JSON.stringify({claim_token: pendingClaimToken})
+    }).then(function(res){
+      if (!res.ok) throw new Error((res.body && res.body.error) || "Could not delete this tabulation.");
+      pendingTabId = null; pendingClaimToken = null;
+      files = []; renderFiles();
+      state = {data:null,names:[],adjustments:{},choices:{},frequencies:{},userStatus:{},
+               taxBasis:"included",taxRate:0,awardBasis:"base",deductsConfirmed:false,provisional:false};
+      hide("save-prompt"); hide("results-section"); hide("confirm-section");
+      hide("sample-banner"); hide("sample-cta");
+      show("upload-section");
+      window.scrollTo({top:0, behavior:"smooth"});
+      alert("Tabulation deleted permanently.");
+    }).catch(function(err){
+      btn.disabled = false; msg.textContent = err.message;
+    });
+  }
+
   // After successful anonymous upload, show save prompt + stash tab id
   function afterUploadSuccess(body){
     if (body.tabulation_id && !body.saved){
@@ -1932,6 +2019,7 @@
       $("results-section").parentNode.insertBefore(sp, $("results-section"));
       sp.classList.remove("hidden");
       $("save-email-btn").onclick = saveByEmail;
+      $("save-delete-btn").onclick = deletePendingTabulation;
       $("save-prompt-pw").onclick = function(e){ e.preventDefault(); openAuth("signup", pendingTabId); };
     }
   }
@@ -3212,6 +3300,52 @@
     } catch(e) {}
   };
   window.trackPageView(window.location.pathname);
+})();
+
+/* ---------- funnel beacons (Coe 2026-10-13) ----------
+   Anonymous aggregate counters only: an event name, nothing else.
+   The server allowlists exactly these three events on POST /api/track. */
+(function(){
+  function beacon(event){
+    try {
+      var payload = JSON.stringify({event: event});
+      if (navigator.sendBeacon) {
+        var blob = new Blob([payload], {type: "application/json"});
+        if (navigator.sendBeacon("/api/track", blob)) return;
+      }
+      fetch("/api/track", {method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: payload, keepalive: true}).catch(function(){});
+    } catch(e) {}
+  }
+  window.funnelBeacon = beacon;
+  function wire(){
+    try {
+      var link = document.getElementById("license-link");
+      if (link) link.addEventListener("click", function(){ beacon("license_link_click"); });
+      var mail = document.getElementById("license-mailto");
+      if (mail) mail.addEventListener("click", function(){ beacon("license_mailto_click"); });
+      var section = document.getElementById("license");
+      if (section && "IntersectionObserver" in window) {
+        var seen = false;
+        var obs = new IntersectionObserver(function(entries){
+          entries.forEach(function(en){
+            if (!seen && en.isIntersecting) {
+              seen = true;
+              beacon("license_section_view");
+              obs.disconnect();
+            }
+          });
+        }, {threshold: 0.25});
+        obs.observe(section);
+      }
+    } catch(e) {}
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", wire);
+  } else {
+    wire();
+  }
 })();
 
 /* ---------- guided tutorial (Coe 2026-10-10) ---------- */
