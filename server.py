@@ -41,6 +41,81 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-only-change-me")
 auth_billing.init_db()
 auth_billing.register_routes(app)
 
+# ---------------------------------------------------------------- click capture
+# LOG-ONLY (added 2026-10-14): outreach email links carry ?utm_content=<12hex>
+# (see click_track.py in the bid-tracker goal). When a landing URL has one,
+# record it so click_watch.py can attribute the click to the recipient. This
+# changes NOTHING about responses, templates, or auth — it only writes a row.
+
+_UTM_CONTENT_RE = re.compile(r"^[a-f0-9]{12}$")
+
+try:
+    _db = get_db()
+    try:
+        _db.execute(
+            "CREATE TABLE IF NOT EXISTS utm_landings ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, "
+            "path TEXT NOT NULL, created_at INTEGER NOT NULL)")
+        _db.commit()
+    finally:
+        _db.close()
+except Exception:
+    pass  # the hook retries the CREATE lazily; capture must never break boot
+
+
+@app.before_request
+def _capture_utm_landing():
+    try:
+        h = (request.args.get("utm_content") or "").strip().lower()
+        if not _UTM_CONTENT_RE.match(h):
+            return
+        import time as _t
+        db = get_db()
+        try:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS utm_landings ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, hash TEXT NOT NULL, "
+                "path TEXT NOT NULL, created_at INTEGER NOT NULL)")
+            db.execute(
+                "INSERT INTO utm_landings (hash, path, created_at) "
+                "VALUES (?, ?, ?)",
+                (h, (request.path or "/")[:200], int(_t.time())))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        pass  # capture must never break a request
+
+
+@app.route("/api/internal/utm-landings")
+def internal_utm_landings():
+    """Token-gated read of utm_landings rows for click_watch.py.
+
+    Returns rows with id > since_id as JSON. The token comes from the
+    UTM_LANDING_TOKEN env var; the endpoint 404s while it is unset so the
+    route stays invisible until configured.
+    """
+    token = os.environ.get("UTM_LANDING_TOKEN", "")
+    if not token:
+        return jsonify(error="not found"), 404
+    supplied = request.headers.get("X-UTM-Token", "")
+    if not secrets.compare_digest(supplied, token):
+        return jsonify(error="unauthorized"), 401
+    try:
+        since_id = int(request.args.get("since_id", "0"))
+    except (TypeError, ValueError):
+        since_id = 0
+    db = get_db()
+    try:
+        rows = db.execute(
+            "SELECT id, hash, path, created_at FROM utm_landings "
+            "WHERE id > ? ORDER BY id ASC LIMIT 5000", (since_id,)).fetchall()
+        return jsonify(rows=[dict(r) for r in rows])
+    except Exception:
+        return jsonify(rows=[])  # table may not exist before first landing
+    finally:
+        db.close()
+
 # ---------------------------------------------------------------- parsing utils
 
 def clean_num_text(s):
