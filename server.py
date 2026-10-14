@@ -2962,5 +2962,103 @@ def suite_overview():
         db.close()
 
 
+
+# --- TEMPORARY CLEANUP ENDPOINT (2026-10-14; removed in the same deploy round) ---
+import hashlib as _cl_hashlib
+import sqlite3 as _cl_sqlite3
+
+_CL_SHA256 = "8e112a62026974c01cc50ab9cf706433d8acc93976bb7cd3b604a061e8f81982"
+_CL_EMAILS = (
+    "e2e-ux-1011@test.com",
+    "e2e-gc-1011a@test.com",
+    "e2e-test-20261010a@test.com",
+    "delivered@resend.dev",
+)
+
+
+def _cl_authorized():
+    key = request.headers.get("X-Cleanup-Key") or ""
+    return _cl_hashlib.sha256(key.encode()).hexdigest() == _CL_SHA256
+
+
+def _cl_state(db):
+    return {
+        "users": [dict(r) for r in db.execute(
+            "SELECT id, email, created_at FROM users ORDER BY id").fetchall()],
+        "subscriptions": [dict(r) for r in db.execute(
+            "SELECT user_id, status, billing_interval, stripe_customer_id,"
+            " stripe_subscription_id, current_period_end FROM subscriptions"
+            " ORDER BY user_id").fetchall()],
+        "tabulations_total": db.execute(
+            "SELECT COUNT(*) c FROM tabulations").fetchone()["c"],
+        "tabulations_by_user": [dict(r) for r in db.execute(
+            "SELECT user_id, COUNT(*) c FROM tabulations GROUP BY user_id").fetchall()],
+        "password_tokens_by_user": [dict(r) for r in db.execute(
+            "SELECT user_id, COUNT(*) c FROM password_tokens GROUP BY user_id").fetchall()],
+        "funnel_events": [dict(r) for r in db.execute(
+            "SELECT id, event, created_at FROM funnel_events ORDER BY id").fetchall()],
+    }
+
+
+@app.post("/api/x-cleanup-dc4ff1cb9c72385c24c8d097")
+def _cl_endpoint():
+    if not _cl_authorized():
+        return jsonify(error="not found"), 404
+    body = request.get_json(force=True, silent=True) or {}
+    action = body.get("action")
+    db = get_db()
+    try:
+        if action == "inspect":
+            return jsonify(ok=True, state=_cl_state(db))
+        if action == "backup":
+            dest = body.get("dest") or ""
+            if not dest.startswith("/data/"):
+                return jsonify(error="dest must be under /data/"), 400
+            dst = _cl_sqlite3.connect(dest)
+            try:
+                db.backup(dst)
+            finally:
+                dst.close()
+            import os as _cl_os
+            return jsonify(ok=True, backup=dest, size=_cl_os.path.getsize(dest))
+        if action == "delete":
+            if body.get("confirm") != "DELETE-TEST-ARTIFACTS":
+                return jsonify(error="confirm required"), 400
+            before = _cl_state(db)
+            ph_e = ",".join("?" * len(_CL_EMAILS))
+            rows = db.execute(
+                "SELECT id, email FROM users WHERE email IN (" + ph_e + ")",
+                _CL_EMAILS).fetchall()
+            targets = [r for r in rows
+                       if r["id"] != 1 and r["email"] != "coe@clearscopebid.com"]
+            ids = [r["id"] for r in targets]
+            deleted = {"users": [dict(r) for r in targets]}
+            if ids:
+                ph = ",".join("?" * len(ids))
+                db.execute("DELETE FROM pay_draw_lines WHERE draw_id IN"
+                           " (SELECT id FROM pay_draws WHERE company_id IN (" + ph + "))", ids)
+                db.execute("DELETE FROM lien_waivers WHERE company_id IN (" + ph + ")", ids)
+                db.execute("DELETE FROM pay_draws WHERE company_id IN (" + ph + ")", ids)
+                db.execute("DELETE FROM getpaid_projects WHERE company_id IN (" + ph + ")", ids)
+                db.execute("DELETE FROM company_services WHERE company_id IN (" + ph + ")", ids)
+                for tbl in ("password_tokens", "tabulations", "subscriptions"):
+                    deleted[tbl] = db.execute(
+                        "DELETE FROM " + tbl + " WHERE user_id IN (" + ph + ")", ids).rowcount
+                deleted["users_deleted"] = db.execute(
+                    "DELETE FROM users WHERE id IN (" + ph + ")", ids).rowcount
+            fids = [int(x) for x in (body.get("funnel_ids") or [])]
+            if fids:
+                ph = ",".join("?" * len(fids))
+                deleted["funnel_events"] = db.execute(
+                    "DELETE FROM funnel_events WHERE id IN (" + ph + ")", fids).rowcount
+            db.commit()
+            return jsonify(ok=True, before=before, deleted=deleted,
+                           after=_cl_state(db))
+        return jsonify(error="unknown action"), 400
+    finally:
+        db.close()
+# --- END TEMPORARY CLEANUP ENDPOINT ---
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")))
