@@ -607,8 +607,12 @@
   <!-- Admin tab -->
   <div id="dtab-admin" class="mt-5 hidden space-y-5">
     <div class="grid grid-cols-2 md:grid-cols-4 gap-4" id="admin-stats"></div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4" id="tracking-topstats"></div>
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8">
-      <h3 class="text-xl font-bold mb-4" style="color:var(--navy)">Site tracking</h3>
+      <div class="flex items-baseline justify-between flex-wrap gap-2 mb-4">
+        <h3 class="text-xl font-bold" style="color:var(--navy)">Site tracking</h3>
+        <span class="text-xs text-slate-500">real visitors · bots excluded<span id="tracking-updated"></span></span>
+      </div>
       <div class="flex items-center justify-between mb-3">
         <span class="text-sm text-slate-500">Page view counters</span>
         <button id="tracking-excludemine" class="text-xs text-slate-400 hover:text-slate-700 hover:underline mr-3">Exclude my visits</button>
@@ -616,6 +620,10 @@
       </div>
       <div id="tracking-stats" class="text-sm text-slate-500">Loading…</div>
       <div id="tracking-daily" class="mt-4"></div>
+      <div class="flex items-center justify-between mt-6 mb-3">
+        <span class="text-sm text-slate-500">Trial signups — new accounts created</span>
+      </div>
+      <div id="tracking-signups" class="text-sm text-slate-500">Loading…</div>
       <div class="flex items-center justify-between mt-6 mb-3">
         <span class="text-sm text-slate-500">Tabulations run — split by the account's current plan (free / subscriber / no account)</span>
       </div>
@@ -625,9 +633,17 @@
       </div>
       <div id="tracking-emails" class="text-sm text-slate-500">Loading…</div>
       <div class="flex items-center justify-between mt-6 mb-3">
+        <span class="text-sm text-slate-500">Funnel — visitors to trial to signup</span>
+      </div>
+      <div id="tracking-vfunnel" class="text-sm text-slate-500">Loading…</div>
+      <div class="flex items-center justify-between mt-6 mb-3">
         <span class="text-sm text-slate-500">Funnel — anonymous step counters (sample runs, uploads, license interest)</span>
       </div>
       <div id="tracking-funnel" class="text-sm text-slate-500">Loading…</div>
+      <div class="flex items-center justify-between mt-6 mb-3">
+        <span class="text-sm text-slate-500">Visitors by source</span>
+      </div>
+      <div id="tracking-sources" class="text-sm text-slate-500">Loading…</div>
       <div class="grid md:grid-cols-2 gap-6 mt-6">
         <div>
           <h4 class="font-semibold mb-2" style="color:var(--navy)">Top pages (30d)</h4>
@@ -638,6 +654,14 @@
           <div id="tracking-refs" class="text-sm space-y-1"></div>
         </div>
       </div>
+      <div class="flex items-center justify-between mt-6 mb-3">
+        <span class="text-sm text-slate-500">Visits to (30d)</span>
+      </div>
+      <div id="tracking-visits" class="text-sm space-y-1"></div>
+      <div class="flex items-center justify-between mt-6 mb-3">
+        <span class="text-sm text-slate-500">More signals</span>
+      </div>
+      <div id="tracking-signals" class="text-sm text-slate-500">Loading…</div>
     </div>
     <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6 md:p-8 overflow-x-auto">
       <h3 class="text-xl font-bold mb-4" style="color:var(--navy)">All users</h3>
@@ -1817,6 +1841,93 @@
           return '<div class="rounded-lg border border-slate-200 p-3"><div class="text-xs text-slate-500">'+c[0]+
             '</div><div class="font-bold mt-1" style="color:var(--navy)">'+c[1]+'</div></div>';
         }).join("") + '</div>';
+      // Sections mirroring the Bid Tracker traffic page (2026-10-16):
+      // top stat row, trial signups, visitors->trial->signup funnel,
+      // visitors by source, visits to, more signals. "Trial" here is the
+      // sample run (the anonymous funnel event); campaign source classes
+      // have no data in this app (bare pathnames, no utm) and render —.
+      var updEl = $("tracking-updated");
+      if (updEl) updEl.textContent = " · updated " + new Date().toLocaleTimeString();
+      function pct(num, den){ return (den != null && den > 0) ? Math.round(num/den*1000)/10 : null; }
+      function pctFmt(v){ return v == null ? "—" : v + "%"; }
+      function smallCard(label, value){
+        return '<div class="rounded-lg border border-slate-200 p-3"><div class="text-xs text-slate-500">'+label+
+          '</div><div class="font-bold mt-1" style="color:var(--navy)">'+value+'</div></div>';
+      }
+      function winBlock(title, inner){
+        return '<div class="mb-3"><div class="text-xs text-slate-400 mb-1">'+title+'</div>' +
+          '<div class="grid grid-cols-2 md:grid-cols-4 gap-3">'+inner+'</div></div>';
+      }
+      var winDefs = [["Today","today"],["Last 7 days","last_7d"],["Last 30 days","last_30d"]];
+      var tsEl = $("tracking-topstats");
+      if (tsEl) {
+        var tcards = [
+          ["Visitors today", t.today.visitors],
+          ["Visitors (30d)", t.last_30d.visitors],
+          ["Signups (30d)", t.signups ? t.signups.last_30d : "—"],
+          ["Emails sent (30d)", t.emails ? t.emails.last_30d : "—"]
+        ];
+        tsEl.innerHTML = tcards.map(function(c){
+          return '<div class="bg-white rounded-xl border border-slate-200 p-5"><div class="text-sm text-slate-500">'+c[0]+
+            '</div><div class="text-3xl font-bold mt-1" style="color:var(--navy)">'+c[1]+'</div></div>';
+        }).join("");
+      }
+      var sgEl = $("tracking-signups");
+      if (sgEl && t.signups) {
+        var sgcards = [["Today", t.signups.today], ["Last 7 days", t.signups.last_7d], ["Last 30 days", t.signups.last_30d]];
+        sgEl.innerHTML = '<div class="grid grid-cols-3 gap-3">' + sgcards.map(function(c){
+          return smallCard(c[0], c[1] + " signup" + (c[1]===1 ? "" : "s"));
+        }).join("") + '</div>';
+      }
+      var vfEl = $("tracking-vfunnel");
+      if (vfEl && t.periods) {
+        vfEl.innerHTML = winDefs.map(function(w){
+          var p = t.periods[w[1]], sg = t.signups ? t.signups[w[1]] : 0;
+          var sr = t.funnel ? (t.funnel[w[1]].sample_run || 0) : 0;
+          var em = t.emails ? t.emails[w[1]] : null;
+          return winBlock(w[0],
+            smallCard("Visitors", p.visitors) +
+            smallCard("Sample runs", sr) +
+            smallCard("Signups", sg) +
+            smallCard("Visitors ÷ emails sent", pctFmt(pct(p.visitors, em))) +
+            smallCard("Sample runs ÷ visitors", pctFmt(pct(sr, p.visitors))) +
+            smallCard("Signups ÷ sample runs", pctFmt(pct(sg, sr))));
+        }).join("");
+      }
+      var soEl = $("tracking-sources");
+      if (soEl && t.periods) {
+        soEl.innerHTML = winDefs.map(function(w){
+          var s = t.periods[w[1]].sources;
+          return winBlock(w[0],
+            smallCard("Direct", "~"+s.direct) +
+            smallCard("Referral", "~"+s.referral) +
+            smallCard("Other campaign", "—") +
+            smallCard("Beta email", "—") +
+            smallCard("Cold email", "—"));
+        }).join("");
+      }
+      var vtEl = $("tracking-visits");
+      if (vtEl && t.periods) {
+        var pg30 = t.periods.last_30d.pages;
+        function vrow(label, v){
+          return '<div class="flex justify-between py-1 border-b border-slate-100"><span class="text-sm">'+label+
+            '</span><span class="font-semibold">~'+v+'</span></div>';
+        }
+        vtEl.innerHTML = vrow("Home page", pg30.home) + vrow("Get-Paid", pg30.get_paid) + vrow("Other pages", pg30.other);
+      }
+      var msEl = $("tracking-signals");
+      if (msEl && t.periods) {
+        msEl.innerHTML = winDefs.map(function(w){
+          var p = t.periods[w[1]], sg = t.signups ? t.signups[w[1]] : 0;
+          var sr = t.funnel ? (t.funnel[w[1]].sample_run || 0) : 0;
+          var avg = p.visitors > 0 ? Math.round(p.views/p.visitors*10)/10 : null;
+          return winBlock(w[0],
+            smallCard("Bounce rate", pctFmt(pct(p.bounced, p.visitors))) +
+            smallCard("Avg pages / visitor", avg == null ? "—" : avg) +
+            smallCard("Returning visitors", pctFmt(pct(p.returning, p.visitors))) +
+            smallCard("Sample → signup", pctFmt(pct(sg, sr))));
+        }).join("");
+      }
       if (t.tabulations) {
         function tfmt(s){
           return s.total + " run · " + s.free + " free · " + s.paid + " subscriber" +
