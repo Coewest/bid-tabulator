@@ -1990,6 +1990,70 @@ def admin_tracking():
             _zero = {e: 0 for e in FUNNEL_EVENTS}
             stats["funnel"] = {"today": dict(_zero), "last_7d": dict(_zero),
                                 "last_30d": dict(_zero)}
+        # Signups + per-period aggregates for the traffic sections that
+        # mirror the Bid Tracker traffic page (2026-10-16: same sections,
+        # labels, windows, and math). Signups exclude the founder's admin
+        # account, the same way the Tracker excludes company id 1. Bounce
+        # = visitors with exactly one view in the window; avg pages and
+        # ratios are derived from these counts by the page. Bots and the
+        # admin's own visits are never stored in page_views (see
+        # track_page_view), so no extra filtering applies. The recorded
+        # path is a bare pathname (no query string), so the Tracker's
+        # utm campaign source classes have no underlying data here; only
+        # Direct / Referral (from the referrer) can be computed.
+        from auth_billing import ADMIN_EMAIL as _ADMIN_EMAIL
+
+        def signup_count(since_ts):
+            return db.execute(
+                "SELECT COUNT(*) as c FROM users WHERE created_at >= ? AND email != ?",
+                (since_ts, _ADMIN_EMAIL)).fetchone()["c"]
+
+        stats["signups"] = {
+            "today": signup_count(today_start),
+            "last_7d": signup_count(now - 7 * 86400),
+            "last_30d": signup_count(now - 30 * 86400),
+        }
+
+        def period_stats(since_ts):
+            vc = db.execute(
+                "SELECT visitor_hash, COUNT(*) as c FROM page_views"
+                " WHERE created_at >= ? GROUP BY visitor_hash",
+                (since_ts,)).fetchall()
+            visitors = len(vc)
+            returning = db.execute(
+                "SELECT COUNT(DISTINCT visitor_hash) as c FROM page_views"
+                " WHERE created_at >= ? AND visitor_hash IN"
+                " (SELECT visitor_hash FROM page_views WHERE created_at < ?)",
+                (since_ts, since_ts)).fetchone()["c"]
+            src = db.execute(
+                "SELECT COUNT(DISTINCT CASE WHEN referrer IS NULL OR referrer = ''"
+                " THEN visitor_hash END) as d,"
+                " COUNT(DISTINCT CASE WHEN referrer IS NOT NULL AND referrer != ''"
+                " THEN visitor_hash END) as r"
+                " FROM page_views WHERE created_at >= ?",
+                (since_ts,)).fetchone()
+            pg = db.execute(
+                "SELECT COUNT(DISTINCT CASE WHEN path = '/' THEN visitor_hash END) as home,"
+                " COUNT(DISTINCT CASE WHEN path = '/get-paid' THEN visitor_hash END) as getpaid,"
+                " COUNT(DISTINCT CASE WHEN path NOT IN ('/', '/get-paid')"
+                " THEN visitor_hash END) as other"
+                " FROM page_views WHERE created_at >= ?",
+                (since_ts,)).fetchone()
+            return {
+                "visitors": visitors,
+                "views": sum(r["c"] for r in vc),
+                "bounced": sum(1 for r in vc if r["c"] == 1),
+                "returning": returning,
+                "sources": {"direct": src["d"], "referral": src["r"]},
+                "pages": {"home": pg["home"], "get_paid": pg["getpaid"],
+                          "other": pg["other"]},
+            }
+
+        stats["periods"] = {
+            "today": period_stats(today_start),
+            "last_7d": period_stats(now - 7 * 86400),
+            "last_30d": period_stats(now - 30 * 86400),
+        }
         stats["emails"] = _tabulator_email_counts()
         return jsonify(stats)
     finally:
